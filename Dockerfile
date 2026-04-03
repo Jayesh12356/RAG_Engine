@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY . .
-RUN pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir .
 
 # Render/Docker entrypoint:
 # 1) create/ensure schema + tables
