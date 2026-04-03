@@ -25,11 +25,13 @@ class Settings(BaseSettings):
     # Vector DB
     VECTOR_DB: Literal["qdrant", "milvus"] = "qdrant"
     QDRANT_URL: str = "http://localhost:6333"
+    QDRANT_API_KEY: str = ""
     QDRANT_COLLECTION: str = "helpdesk_chunks"
     MILVUS_URI: str = "http://localhost:19530"
     MILVUS_COLLECTION: str = "helpdesk_chunks"
 
     # Relational DB
+    DATABASE_URL: str = ""
     RELATIONAL_DB: Literal["postgres", "mysql"] = "postgres"
     POSTGRES_URL: str = "postgresql+asyncpg://user:pass@localhost/helpdesk"
     MYSQL_URL: str = "mysql+aiomysql://user:pass@localhost/helpdesk"
@@ -66,12 +68,30 @@ class Settings(BaseSettings):
     OCR_VISION_FALLBACK_ENABLED: bool = False
     OCR_VISION_MODEL: str = "gpt-4o-mini"
     TESSERACT_CMD: str = ""
+    CORS_ALLOW_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"
 
     @property
     def vector_collection(self) -> str:
         if self.VECTOR_DB == "milvus":
             return self.MILVUS_COLLECTION
         return self.QDRANT_COLLECTION
+
+    @property
+    def cors_allow_origins(self) -> list[str]:
+        return [x.strip() for x in self.CORS_ALLOW_ORIGINS.split(",") if x.strip()]
+
+    @property
+    def relational_url(self) -> str:
+        if self.DATABASE_URL.strip():
+            url = self.DATABASE_URL.strip()
+            if url.startswith("postgres://"):
+                return "postgresql+asyncpg://" + url[len("postgres://"):]
+            if url.startswith("postgresql://"):
+                return "postgresql+asyncpg://" + url[len("postgresql://"):]
+            return url
+        if self.RELATIONAL_DB == "mysql":
+            return self.MYSQL_URL
+        return self.POSTGRES_URL
 
 @lru_cache()
 def get_settings() -> Settings:

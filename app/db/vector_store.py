@@ -39,7 +39,10 @@ class QdrantVectorStore(VectorStore):
         settings = get_settings()
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
-            self.client = AsyncQdrantClient(url=settings.QDRANT_URL)
+            self.client = AsyncQdrantClient(
+                url=settings.QDRANT_URL,
+                api_key=settings.QDRANT_API_KEY.strip() or None
+            )
 
     async def ensure_collection(self, name: str, dim: int) -> None:
         from qdrant_client.http.models import VectorParams, Distance

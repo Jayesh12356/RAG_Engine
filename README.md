@@ -118,6 +118,51 @@ Use the UI to upload PDFs. For OCR testing, your scanned assets live in:
 
 ---
 
+## Deployment (Vercel + Render + Qdrant Cloud)
+
+### Frontend on Vercel (helpdesk-ui repo)
+
+- Keep frontend deployment connected to the `helpdesk-ui` source repository.
+- Set frontend env:
+  - `NEXT_PUBLIC_API_URL=https://<your-render-backend>.onrender.com`
+- Do not leave this env empty, otherwise frontend falls back to localhost.
+
+### Backend on Render (single-command startup)
+
+Use this as Render start command:
+
+```bash
+python scripts/bootstrap_start.py
+```
+
+What this one command does on each deploy:
+
+1. Initializes relational schema idempotently (`create_all`).
+2. Ensures vector collection exists in Qdrant.
+3. Starts FastAPI/Uvicorn.
+
+### Required Render backend env vars
+
+```env
+RELATIONAL_DB=postgres
+DATABASE_URL=postgres://<user>:<password>@<host>:5432/<db>
+
+VECTOR_DB=qdrant
+QDRANT_URL=https://<cluster-id>.<region>.aws.cloud.qdrant.io:6333
+QDRANT_API_KEY=<qdrant-cloud-api-key>
+QDRANT_COLLECTION=helpdesk_chunks
+
+CORS_ALLOW_ORIGINS=https://<your-vercel-app>.vercel.app,http://localhost:3000
+```
+
+Notes:
+
+- `DATABASE_URL` is preferred in production; `postgres://` is auto-normalized to async SQLAlchemy format.
+- Qdrant API key is optional locally, but required for most Qdrant Cloud projects.
+- Seed data ingestion is intentionally skipped in production startup (only schema + collection bootstrap).
+
+---
+
 ## API (High Level)
 
 - `GET /health`

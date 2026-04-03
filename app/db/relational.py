@@ -115,10 +115,7 @@ async def delete_session(session_id: str) -> int:
 
 def get_engine():
     settings = get_settings()
-    if settings.RELATIONAL_DB == "mysql":
-        return create_async_engine(settings.MYSQL_URL, echo=False)
-    else:
-        return create_async_engine(settings.POSTGRES_URL, echo=False)
+    return create_async_engine(settings.relational_url, echo=False)
 
 async def init_db():
     engine = get_engine()

@@ -49,3 +49,45 @@ def test_relational_db_switching(monkeypatch):
     monkeypatch.setattr("app.db.relational.get_settings", lambda: settings_m)
     engine = get_engine()
     assert "aiomysql" in str(engine.url)
+
+
+def test_database_url_precedence_and_normalization():
+    settings = Settings(
+        DATABASE_URL="postgres://user:pass@host:5432/dbname",
+        RELATIONAL_DB="postgres",
+        POSTGRES_URL="postgresql+asyncpg://local:local@localhost/localdb"
+    )
+    assert settings.relational_url.startswith("postgresql+asyncpg://")
+    assert "host:5432/dbname" in settings.relational_url
+
+
+def test_database_url_postgresql_normalization():
+    settings = Settings(DATABASE_URL="postgresql://user:pass@host:5432/dbname")
+    assert settings.relational_url.startswith("postgresql+asyncpg://")
+
+
+def test_database_url_mysql_passthrough():
+    settings = Settings(DATABASE_URL="mysql+aiomysql://user:pass@host:3306/dbname")
+    assert settings.relational_url == "mysql+aiomysql://user:pass@host:3306/dbname"
+
+
+def test_cors_origins_parsing():
+    settings = Settings(CORS_ALLOW_ORIGINS="https://a.com, https://b.com ,http://localhost:3000")
+    assert settings.cors_allow_origins == ["https://a.com", "https://b.com", "http://localhost:3000"]
+
+
+def test_qdrant_client_receives_api_key(monkeypatch):
+    captured = {}
+
+    class DummyClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr("qdrant_client.AsyncQdrantClient", DummyClient)
+    settings = Settings(QDRANT_URL="https://qdrant.example", QDRANT_API_KEY="secret-key")
+    monkeypatch.setattr("app.db.vector_store.get_settings", lambda: settings)
+
+    _ = QdrantVectorStore()
+
+    assert captured["url"] == "https://qdrant.example"
+    assert captured["api_key"] == "secret-key"
