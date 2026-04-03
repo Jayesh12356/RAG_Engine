@@ -3,8 +3,8 @@ import os
 import structlog
 import uvicorn
 
-from scripts.init_db import init_db
-from scripts.init_vector_db import init_vector_db
+from .init_db import init_db
+from .init_vector_db import init_vector_db
 
 logger = structlog.get_logger(__name__)
 

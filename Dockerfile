@@ -4,7 +4,8 @@ WORKDIR /app
 
 # Runtime defaults for cleaner logs and reliable container behavior.
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app
 
 # System dependencies:
 # - build-essential: compile wheels when needed
@@ -23,4 +24,4 @@ RUN pip install --no-cache-dir .
 # 1) create/ensure schema + tables
 # 2) ensure vector collection
 # 3) start API server
-CMD ["python", "scripts/bootstrap_start.py"]
+CMD ["python", "-m", "scripts.bootstrap_start"]
