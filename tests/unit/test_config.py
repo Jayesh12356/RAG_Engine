@@ -118,3 +118,7 @@ def test_engine_url_unchanged_with_default_schema(monkeypatch):
     monkeypatch.setattr("app.db.relational.get_settings", lambda: settings)
     engine = get_engine()
     assert str(engine.url) == "postgresql+asyncpg://user:***@localhost:5432/dbname"
+
+
+def test_app_import_smoke():
+    import app.main  # noqa: F401
