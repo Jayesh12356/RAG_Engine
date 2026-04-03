@@ -9,6 +9,7 @@ description = "Configurable IT Helpdesk RAG System"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi",
+    "python-multipart",
     "uvicorn",
     "pydantic",
     "pydantic-settings",
