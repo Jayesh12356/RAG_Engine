@@ -146,6 +146,7 @@ What this one command does on each deploy:
 ```env
 RELATIONAL_DB=postgres
 DATABASE_URL=postgres://<user>:<password>@<host>:5432/<db>
+DB_SCHEMA=helpdesk_chatbot
 
 VECTOR_DB=qdrant
 QDRANT_URL=https://<cluster-id>.<region>.aws.cloud.qdrant.io:6333
@@ -158,6 +159,7 @@ CORS_ALLOW_ORIGINS=https://<your-vercel-app>.vercel.app,http://localhost:3000
 Notes:
 
 - `DATABASE_URL` is preferred in production; `postgres://` is auto-normalized to async SQLAlchemy format.
+- `DB_SCHEMA` isolates tables per app when sharing one Postgres instance; use a unique schema per project.
 - Qdrant API key is optional locally, but required for most Qdrant Cloud projects.
 - Seed data ingestion is intentionally skipped in production startup (only schema + collection bootstrap).
 

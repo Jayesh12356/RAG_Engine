@@ -91,3 +91,30 @@ def test_qdrant_client_receives_api_key(monkeypatch):
 
     assert captured["url"] == "https://qdrant.example"
     assert captured["api_key"] == "secret-key"
+
+
+def test_db_schema_default_public():
+    settings = Settings()
+    assert settings.db_schema == "public"
+
+
+def test_db_schema_custom_value():
+    settings = Settings(DB_SCHEMA="helpdesk_chatbot")
+    assert settings.db_schema == "helpdesk_chatbot"
+
+
+def test_db_schema_invalid_value_raises():
+    settings = Settings(DB_SCHEMA="bad-schema-name")
+    with pytest.raises(ValueError):
+        _ = settings.db_schema
+
+
+def test_engine_url_unchanged_with_default_schema(monkeypatch):
+    settings = Settings(
+        RELATIONAL_DB="postgres",
+        POSTGRES_URL="postgresql+asyncpg://user:pass@localhost:5432/dbname",
+        DB_SCHEMA="public",
+    )
+    monkeypatch.setattr("app.db.relational.get_settings", lambda: settings)
+    engine = get_engine()
+    assert str(engine.url) == "postgresql+asyncpg://user:***@localhost:5432/dbname"

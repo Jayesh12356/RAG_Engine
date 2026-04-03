@@ -1,5 +1,6 @@
 from functools import lru_cache
 from typing import Literal
+import re
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
@@ -32,6 +33,7 @@ class Settings(BaseSettings):
 
     # Relational DB
     DATABASE_URL: str = ""
+    DB_SCHEMA: str = "public"
     RELATIONAL_DB: Literal["postgres", "mysql"] = "postgres"
     POSTGRES_URL: str = "postgresql+asyncpg://user:pass@localhost/helpdesk"
     MYSQL_URL: str = "mysql+aiomysql://user:pass@localhost/helpdesk"
@@ -92,6 +94,13 @@ class Settings(BaseSettings):
         if self.RELATIONAL_DB == "mysql":
             return self.MYSQL_URL
         return self.POSTGRES_URL
+
+    @property
+    def db_schema(self) -> str:
+        schema = self.DB_SCHEMA.strip() or "public"
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", schema):
+            raise ValueError("DB_SCHEMA must match ^[A-Za-z_][A-Za-z0-9_]*$")
+        return schema
 
 @lru_cache()
 def get_settings() -> Settings:

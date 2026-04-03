@@ -1,6 +1,6 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base
-from sqlalchemy import Column, String, Text, DateTime, JSON, Float, func, select, delete
+from sqlalchemy import Column, String, Text, DateTime, JSON, Float, func, select, delete, text
 from app.config import get_settings
 import uuid
 
@@ -115,11 +115,17 @@ async def delete_session(session_id: str) -> int:
 
 def get_engine():
     settings = get_settings()
-    return create_async_engine(settings.relational_url, echo=False)
+    connect_args = {}
+    if settings.relational_url.startswith("postgresql+asyncpg://"):
+        connect_args = {"server_settings": {"search_path": settings.db_schema}}
+    return create_async_engine(settings.relational_url, echo=False, connect_args=connect_args)
 
 async def init_db():
+    settings = get_settings()
     engine = get_engine()
     async with engine.begin() as conn:
+        if settings.relational_url.startswith("postgresql+asyncpg://"):
+            await conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{settings.db_schema}"'))
         await conn.run_sync(Base.metadata.create_all)
 
 def get_session_maker():
