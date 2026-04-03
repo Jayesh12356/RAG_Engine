@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap');
+
+*{box-sizing:border-box;margin:0;padding:0}
+
+body{
+  font-family:'Inter',system-ui,sans-serif;
+  background:#f4f6fb;
+  padding:48px;
+  min-width:1380px;
+}
+
+.wrap{
+  background:#ffffff;
+  border-radius:24px;
+  padding:48px 52px 52px;
+  max-width:1340px;
+  margin:0 auto;
+  box-shadow:0 2px 24px rgba(0,0,0,.07);
+}
+
+/* ── Header ── */
+.hdr{
+  display:flex;align-items:flex-start;justify-content:space-between;
+  padding-bottom:32px;border-bottom:1.5px solid #eef0f5;
+  margin-bottom:40px;
+}
+.hdr-left h1{font-size:22px;font-weight:800;color:#111827;letter-spacing:-.5px;margin-bottom:6px}
+.hdr-left p{font-size:13px;color:#6b7280;font-weight:400}
+.hdr-badge{
+  font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+  padding:6px 14px;border-radius:20px;
+  background:#f0f0ff;color:#6366f1;border:1.5px solid #c7d2fe;
+  white-space:nowrap;margin-top:4px;
+}
+
+/* ── Section ── */
+.section{margin-bottom:36px}
+.section:last-child{margin-bottom:0}
+
+.sec-label{display:flex;align-items:center;gap:12px;margin-bottom:20px}
+.sec-pill{
+  font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+  padding:5px 13px;border-radius:20px;white-space:nowrap;flex-shrink:0;
+}
+.sec-ep{
+  font-family:'JetBrains Mono',monospace;font-size:10.5px;font-weight:600;
+  padding:5px 12px;border-radius:8px;white-space:nowrap;flex-shrink:0;
+}
+.sec-line{flex:1;height:1.5px;background:#f0f0f0}
+
+/* ── Flow row ── */
+.flow{display:flex;align-items:center;flex-wrap:nowrap}
+
+/* ── Step box ── */
+.box{
+  flex-shrink:0;
+  width:110px;
+  background:#ffffff;
+  border-radius:12px;
+  padding:13px 10px 12px;
+  display:flex;flex-direction:column;align-items:center;
+  text-align:center;gap:5px;
+  border:1.5px solid #e5e7eb;
+  box-shadow:0 1px 4px rgba(0,0,0,.04);
+}
+.box-ico{font-size:19px;line-height:1}
+.box-name{font-size:10px;font-weight:700;color:#111827;line-height:1.35}
+.box-note{font-size:8.5px;font-weight:500;color:#9ca3af;line-height:1.3;margin-top:1px}
+.box-end{border-width:2px}
+
+/* ── Arrow connector ── */
+.arrow{
+  flex-shrink:0;
+  width:48px;height:32px;
+  position:relative;display:flex;align-items:center;
+}
+.arrow-body{
+  position:absolute;left:0;right:11px;
+  height:2.5px;border-radius:2px;top:50%;transform:translateY(-50%);
+}
+.arrow-head{
+  position:absolute;right:0;top:50%;transform:translateY(-50%);
+  width:0;height:0;
+}
+
+/* ── Single travelling dot ── */
+.dot{
+  position:absolute;
+  width:9px;height:9px;border-radius:50%;
+  top:50%;transform:translateY(-50%);
+  left:2px;opacity:0;z-index:2;
+}
+
+/* Fallback note */
+.fb{
+  display:flex;align-items:center;gap:8px;
+  margin-top:12px;margin-left:4px;
+  font-size:10.5px;color:#9ca3af;font-weight:500;
+}
+.fb-dashes{width:28px;height:0;border-top:2px dashed #d1d5db}
+
+/* Legend */
+.legend{
+  display:flex;gap:24px;flex-wrap:wrap;align-items:center;
+  margin-top:36px;padding-top:28px;border-top:1.5px solid #f0f2f5;
+}
+.lg{display:flex;align-items:center;gap:7px;font-size:11px;color:#6b7280;font-weight:500}
+.lg-dot{width:10px;height:10px;border-radius:50%}
+.lg-dash{width:22px;border-top:2px dashed #d1d5db}
+
+/* ═══ COLOR SYSTEM ═══ */
+
+/* Violet — Ingestion */
+.violet .sec-pill{background:#f5f3ff;color:#7c3aed;border:1.5px solid #ddd6fe}
+.violet .sec-ep{background:#f5f3ff;color:#7c3aed}
+.violet .box{border-color:#ede9fe}
+.violet .box-end{border-color:#7c3aed;background:#faf8ff}
+.violet .arrow-body{background:#ddd6fe}
+.violet .arrow-head{border-top:6px solid transparent;border-bottom:6px solid transparent;border-left:9px solid #a78bfa}
+.violet .dot{background:#7c3aed;box-shadow:0 0 7px 2px rgba(124,58,237,.35)}
+
+/* Sky — Query sync */
+.sky .sec-pill{background:#f0f9ff;color:#0369a1;border:1.5px solid #bae6fd}
+.sky .sec-ep{background:#f0f9ff;color:#0369a1}
+.sky .box{border-color:#e0f2fe}
+.sky .box-end{border-color:#0891b2;background:#f0fafe}
+.sky .arrow-body{background:#bae6fd}
+.sky .arrow-head{border-top:6px solid transparent;border-bottom:6px solid transparent;border-left:9px solid #38bdf8}
+.sky .dot{background:#0284c7;box-shadow:0 0 7px 2px rgba(2,132,199,.35)}
+
+/* Emerald — Query stream */
+.emerald .sec-pill{background:#f0fdf4;color:#15803d;border:1.5px solid #bbf7d0}
+.emerald .sec-ep{background:#f0fdf4;color:#15803d}
+.emerald .box{border-color:#dcfce7}
+.emerald .box-end{border-color:#16a34a;background:#f0fdf6}
+.emerald .arrow-body{background:#bbf7d0}
+.emerald .arrow-head{border-top:6px solid transparent;border-bottom:6px solid transparent;border-left:9px solid #4ade80}
+.emerald .dot{background:#16a34a;box-shadow:0 0 7px 2px rgba(22,163,74,.35)}
+
+/* Amber — Chat */
+.amber .sec-pill{background:#fffbeb;color:#b45309;border:1.5px solid #fde68a}
+.amber .sec-ep{background:#fffbeb;color:#b45309}
+.amber .box{border-color:#fef3c7}
+.amber .box-end{border-color:#d97706;background:#fffdf0}
+.amber .arrow-body{background:#fde68a}
+.amber .arrow-head{border-top:6px solid transparent;border-bottom:6px solid transparent;border-left:9px solid #fbbf24}
+.amber .dot{background:#d97706;box-shadow:0 0 7px 2px rgba(217,119,6,.35)}
+
+/* Divider */
+.divider{height:1.5px;background:#f3f4f6;margin:32px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- Header -->
+  <div class="hdr">
+    <div class="hdr-left">
+      <h1>End-to-End Data Flow</h1>
+      <p>Ingestion · Query (sync + streaming) · Chat (sync + streaming)</p>
+    </div>
+    <div class="hdr-badge">API Architecture</div>
+  </div>
+
+  <!-- ═══ INGESTION ═══ -->
+  <div class="section violet">
+    <div class="sec-label">
+      <div class="sec-pill">Ingestion</div>
+      <div class="sec-ep">POST /ingest</div>
+      <div class="sec-line"></div>
+    </div>
+    <div class="flow">
+
+      <div class="box">
+        <div class="box-ico">📄</div>
+        <div class="box-name">PDF Upload</div>
+        <div class="box-note">Frontend → API</div>
+      </div>
+      <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
+
+      <div class="box">
+        <div class="box-ico">🔍</div>
+        <div class="box-name">Parse Text</div>
+        <div class="box-note">Page text + metadata</div>
+      </div>
+      <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
+
+      <div class="box">
+        <div class="box-ico">✂️</div>
+        <div class="box-name">Chunk Content</div>
+        <div class="box-note">Overlapping splits</div>
+      </div>
+      <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
+
+      <div class="box">
+        <div class="box-ico">🧮</div>
+        <div class="box-name">Dense Embeddings</div>
+        <div class="box-note">Vector generation</div>
+      </div>
+      <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
+
+      <div class="box">
+        <div class="box-ico">🗄️</div>
+        <div class="box-name">Upsert Vector DB</div>
+        <div class="box-note">Chunks + vectors</div>
+      </div>
+      <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
+
+      <div class="box box-end">
+        <div class="box-ico">🗃️</div>
+        <div class="box-name">Store Relational DB</div>
+        <div class="box-note">Doc + chunk metadata</div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- ═══ QUERY NON-STREAMING ═══ -->
+  <div class="section sky">
+    <div class="sec-label">
+      <div class="sec-pill">Query — Non-streaming</div>
+      <div class="sec-ep">POST /query</div>
+      <div class="sec-line"></div>
+    </div>
+    <div class="flow">
+
+      <div class="box">
+        <div class="box-ico">📥</div>
+        <div class="box-name">Receive Question</div>
+      </div>
+      <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
+
+      <div class="box">
+        <div class="box-ico">🗺️</div>
+        <div class="box-name">Classify Intent</div>
+        <div class="box-note">Keyword routing</div>
+      </div>
+      <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
+
+      <div class="box">
+        <div class="box-ico">🔎</div>
+        <div class="box-name">Hybrid Search</div>
+        <div class="box-note">Candidate chunks</div>
+      </div>
+      <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
+
+      <div class="box">
+        <div class="box-ico">⚖️</div>
+        <div class="box-name">Reranker</div>
+        <div class="box-note">Cohere if available</div>
+      </div>
+      <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
+
+      <div class="box">
+        <div class="box-ico">🛡️</div>
+        <div class="box-name">Evidence Gate</div>
+        <div class="box-note">Signal quality</div>
+      </div>
+      <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
+
+      <div class="box">
+        <div class="box-ico">⚙️</div>
+        <div class="box-name">Generator</div>
+        <div class="box-note">Strict grounding</div>
+      </div>
+      <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
+
+      <div class="box">
+        <div class="box-ico">✅</div>
+        <div class="box-name">Confidence Gate</div>
+        <div class="box-note">Answer vs refusal</div>
+      </div>
+      <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
+
+      <div class="box box-end">
+        <div class="box-ico">📤</div>
+        <div class="box-name">Response</div>
+        <div class="box-note">Confidence + sources</div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- ═══ QUERY STREAMING ═══ -->
+  <div class="section emerald">
+    <div class="sec-label">
+      <div class="sec-pill">Query — Streaming (SSE)</div>
+      <div class="sec-ep">POST /query/stream</div>
+      <div class="sec-line"></div>
+    </div>
+    <div class="flow">
+
+      <div class="box">
+        <div class="box-ico">📡</div>
+        <div class="box-name">Open SSE Stream</div>
+      </div>
+      <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
+
+      <div class="box">
+        <div class="box-ico">🔄</div>
+        <div class="box-name">Retrieval + Generation</div>
+        <div class="box-note">Same pipeline</div>
+      </div>
+      <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
+
+      <div class="box">
+        <div class="box-ico">📨</div>
+        <div class="box-name">Emit delta events</div>
+        <div class="box-note">Incremental text</div>
+      </div>
+      <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
+
+      <div class="box box-end">
+        <div class="box-ico">📦</div>
+        <div class="box-name">Emit final event</div>
+        <div class="box-note">Full QueryResponse</div>
+      </div>
+
+    </div>
+    <div class="fb">
+      <div class="fb-dashes"></div>
+      If stream provider fails → server falls back and still emits <strong style="color:#6b7280">final</strong>
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- ═══ CHAT ═══ -->
+  <div class="section amber">
+    <div class="sec-label">
+      <div class="sec-pill">Chat — Sync &amp; Streaming</div>
+      <div class="sec-ep">POST /chat &nbsp;·&nbsp; POST /chat/stream</div>
+      <div class="sec-line"></div>
+    </div>
+    <div class="flow">
+
+      <div class="box">
+        <div class="box-ico">💬</div>
+        <div class="box-name">Session Create / Resume</div>
+      </div>
+      <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
+
+      <div class="box">
+        <div class="box-ico">📜</div>
+        <div class="box-name">Load History</div>
+        <div class="box-note">CHAT_HISTORY_TURNS</div>
+      </div>
+      <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
+
+      <div class="box">
+        <div class="box-ico">🔎</div>
+        <div class="box-name">Retrieval + Rerank</div>
+        <div class="box-note">Like Query pipeline</div>
+      </div>
+      <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
+
+      <div class="box">
+        <div class="box-ico">🧠</div>
+        <div class="box-name">Build Prompt</div>
+        <div class="box-note">+ conv. history</div>
+      </div>
+      <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
+
+      <div class="box">
+        <div class="box-ico">⚙️</div>
+        <div class="box-name">Generate Answer</div>
+        <div class="box-note">Or use fallback</div>
+      </div>
+      <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
+
+      <div class="box">
+        <div class="box-ico">💾</div>
+        <div class="box-name">Persist Turns</div>
+        <div class="box-note">User + assistant</div>
+      </div>
+      <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
+
+      <div class="box box-end">
+        <div class="box-ico">📤</div>
+        <div class="box-name">Chat Response</div>
+        <div class="box-note">Updated history</div>
+      </div>
+
+    </div>
+    <div class="fb">
+      <div class="fb-dashes"></div>
+      /chat/stream → SSE mode emits <strong style="color:#6b7280">delta</strong> then <strong style="color:#6b7280">final</strong> (same fallback behavior)
+    </div>
+  </div>
+
+  <!-- Legend -->
+  <div class="legend">
+    <div class="lg"><div class="lg-dot" style="background:#7c3aed"></div>Ingestion</div>
+    <div class="lg"><div class="lg-dot" style="background:#0284c7"></div>Query (non-streaming)</div>
+    <div class="lg"><div class="lg-dot" style="background:#16a34a"></div>Query (SSE streaming)</div>
+    <div class="lg"><div class="lg-dot" style="background:#d97706"></div>Chat (sync + streaming)</div>
+    <div style="flex:1"></div>
+    <div class="lg"><div class="lg-dash"></div>Fallback path</div>
+  </div>
+
+</div>
+
+<script>
+// Each flow row runs a strict relay: ONE dot travels at a time.
+// Dot i starts only after dot (i-1) has finished and a pause has elapsed.
+
+const TRAVEL_MS  = 800;   // ms each dot takes to cross its arrow
+const PAUSE_MS   = 500;   // ms gap between consecutive dots in the same row
+const STEP_MS    = TRAVEL_MS + PAUSE_MS; // 2800ms per dot slot
+
+// Expose a controllable "clock" so GIF capture can seek to any time
+window._diagTime = 0;
+window._diagUseRealTime = true;
+
+function easeInOut(t) {
+  // Smooth cubic ease-in-out, t in [0,1]
+  return t < 0.5 ? 2*t*t : 1 - Math.pow(-2*t+2,2)/2;
+}
+
+function tick() {
+  const now = window._diagUseRealTime ? performance.now() : window._diagTime;
+
+  document.querySelectorAll('.flow').forEach(flow => {
+    const dots = [...flow.querySelectorAll('.dot')];
+    const N = dots.length;
+    const rowCycle = N * STEP_MS;
+    const t = now % rowCycle;          // where we are in this row's cycle
+
+    dots.forEach((dot, i) => {
+      const slotStart = i * STEP_MS;
+      const phase = t - slotStart;     // time since this dot's slot began
+
+      if (phase >= 0 && phase < TRAVEL_MS) {
+        // Dot is traveling
+        const progress  = phase / TRAVEL_MS;          // 0→1
+        const eased     = easeInOut(progress);
+        const trackW    = dot.parentElement.offsetWidth;
+        const maxLeft   = trackW - 11;
+        dot.style.left    = (2 + eased * (maxLeft - 2)) + 'px';
+        // Fade in first 8%, fade out last 8%
+        const opacity = progress < 0.08 ? progress/0.08
+                      : progress > 0.92 ? (1-progress)/0.08
+                      : 1;
+        dot.style.opacity = opacity.toFixed(3);
+      } else {
+        dot.style.opacity = '0';
+      }
+    });
+  });
+
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>
