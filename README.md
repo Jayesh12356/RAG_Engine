@@ -1,3 +1,161 @@
+# ⚡ RAG Engine (IT Helpdesk)
+
+Grounded, confidence-gated IT helpdesk chatbot built with a production-style Retrieval-Augmented Generation (RAG) pipeline.
+Upload IT PDFs (network, VPN, SSL, Linux/cloud guides, device manuals, etc.) and ask questions with **sources** and **safe refusals** when evidence is insufficient.
+
+## Live Demo
+- Not deployed yet. Run locally using the steps below.
+
+---
+
+## Features
+
+- 📄 **PDF Ingestion** (digital text PDFs)
+- 🖼️ **Scanned / Image PDF Support**
+  - Auto-detects `text_pdf`, `image_pdf`, and `mixed_pdf`
+  - Uses OCR for image pages (local Tesseract; optional Vision fallback)
+- 🔎 **Hybrid Retrieval**
+  - Dense embeddings + sparse BM25 vectors for stronger candidate recall
+- ⚖️ **Evidence & Confidence Gates**
+  - Retrieval quality checks and confidence-based refusal to reduce hallucinations
+- 🧠 **Reranking + Fallbacks**
+  - Cohere reranking when available, with local fallback on failures
+- 🔄 **Provider Failover**
+  - Automatic LLM provider rotation across configured keys
+- 📡 **Streaming APIs (SSE)**
+  - `/query/stream` and `/chat/stream` emit `delta` then `final`
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+| --- | --- |
+| Backend | Python 3.11+, FastAPI |
+| Ingestion / Parsing | PyMuPDF + OCR (Tesseract; optional Vision) |
+| Text Chunking | `langchain-text-splitters` |
+| Embeddings | OpenAI / OpenRouter / Cohere (configurable) |
+| Vector DB | Qdrant or Milvus |
+| Relational DB | Postgres or MySQL |
+| Retrieval | Dense + BM25 sparse hybrid search |
+
+---
+
+## Documentation
+
+This repo includes a full reference manual under `docs/`:
+
+- `docs/reference/MANUAL.md` (implementation-level behavior, accuracy/grounding strategy, API contracts)
+- `docs/reference/sampleqna.md` (sample Q&A content used for testing)
+- `docs/reference/helpdesk_flow.png` (flow image)
+- `docs/diagram-v4.gif` (end-to-end architecture animation)
+- `docs/diagram-v4.html` (source for the architecture diagram)
+
+---
+
+## Quick Start
+
+### 1) Clone & Configure
+
+```bash
+git clone https://github.com/Jayesh12356/RAG_Engine.git
+cd RAG_Engine
+```
+
+Copy env:
+
+```bash
+cp .env.example .env
+```
+
+### 2) OCR (Optional but recommended for scanned PDFs)
+
+If you want OCR for scanned/image PDFs:
+
+- Ensure **Tesseract** is installed on your machine
+- Configure these env vars (see `.env.example`):
+  - `OCR_ENABLED`
+  - `OCR_LANGUAGES`
+  - `OCR_RENDER_DPI`
+  - `OCR_TEXT_CONFIDENCE_THRESHOLD`
+  - `OCR_VISION_FALLBACK_ENABLED` (default `false`; set `true` to enable Vision fallback)
+  - `TESSERACT_CMD` (Windows full path if needed)
+
+### 3) Start local services
+
+```bash
+make up
+```
+
+### 4) Install dependencies & initialize DBs
+
+```bash
+make install
+make init
+```
+
+### 5) Run backend + frontend
+
+Backend:
+
+```bash
+make dev-backend
+```
+
+Frontend:
+
+```bash
+make dev-frontend
+```
+
+Open: `http://localhost:3000`
+
+### 6) Ingest PDFs
+
+Use the UI to upload PDFs. For OCR testing, your scanned assets live in:
+
+- `image_pdfs/` (image/scanned PDFs)
+
+---
+
+## API (High Level)
+
+- `GET /health`
+- `POST /ingest` (PDF upload and ingestion)
+- `GET /pdfs/{pdf_name}` (serve original PDFs for source links)
+- `GET /documents` + `GET /documents/{document_id}/chunks` + `DELETE /documents/{document_id}`
+- `POST /query` and `POST /query/stream`
+- `POST /chat` and `POST /chat/stream`
+
+For the full operational contract and behavior details, see `docs/reference/MANUAL.md`.
+
+---
+
+## Project Structure
+
+```text
+helpdesk-ui/          # Frontend (Next.js)
+app/                  # FastAPI backend
+  api/                # Web boundaries + routes (incl. SSE streaming)
+  db/                 # Vector + relational adapters
+  ingestion/          # PDF parsing, OCR, chunking, ingestion pipeline
+  llm/                # Provider routing for completion + embeddings
+  query/              # Hybrid retrieval + reranking + RAG generation
+  chat/               # Session + chat orchestration
+data/
+  sample_pdfs/        # Demo PDFs
+image_pdfs/           # OCR testing PDFs
+docs/                  # Architecture diagrams + reference manual
+tests/                 # Unit + integration + e2e tests
+scripts/               # Init / seed helpers
+```
+
+---
+
+## License
+
+MIT (add/adjust if you publish under a different license).
+
 ## RAG Engine – IT Helpdesk Assistant
 
 ### Overview
