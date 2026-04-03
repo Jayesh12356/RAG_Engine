@@ -1,0 +1,39 @@
+﻿
+> helpdesk-ui@0.1.0 build
+> next build
+
+  Γû▓ Next.js 14.2.35
+  - Environments: .env.local
+
+   Creating an optimized production build ...
+ Γ£ô Compiled successfully
+   Linting and checking validity of types ...
+
+./src/app/chat/page.tsx
+20:6  Warning: React Hook useEffect has a missing dependency: 'fetchSessions'. Either include it or remove the dependency array.  react-hooks/exhaustive-deps
+
+info  - Need to disable some ESLint rules? Learn more here: https://nextjs.org/docs/basic-features/eslint#disabling-rules
+   Collecting page data ...
+   Generating static pages (0/9) ...
+   Generating static pages (2/9) 
+   Generating static pages (4/9) 
+   Generating static pages (6/9) 
+ Γ£ô Generating static pages (9/9)
+   Finalizing page optimization ...
+   Collecting build traces ...
+
+Route (app)                              Size     First Load JS
+Γöî Γùï /                                    154 B          87.4 kB
+Γö£ Γùï /_not-found                          873 B          88.1 kB
+Γö£ Γùï /chat                                5.06 kB         107 kB
+Γö£ Γùï /documents                           6.69 kB         103 kB
+Γö£ Γùï /query                               4.88 kB         106 kB
+Γöö Γùï /status                              3.11 kB        90.4 kB
++ First Load JS shared by all            87.3 kB
+  Γö£ chunks/117-a7ab992f539b45f7.js       31.7 kB
+  Γö£ chunks/fd9d1056-9e191f0896c1d560.js  53.6 kB
+  Γöö other shared chunks (total)          1.89 kB
+
+
+Γùï  (Static)  prerendered as static content
+

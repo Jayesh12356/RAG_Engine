@@ -1,0 +1,33 @@
+
+> helpdesk-ui@0.1.0 build
+> next build
+
+  ▲ Next.js 14.2.35
+  - Environments: .env.local
+
+   Creating an optimized production build ...
+ ✓ Compiled successfully
+   Linting and checking validity of types ...
+   Collecting page data ...
+   Generating static pages (0/8) ...
+   Generating static pages (2/8) 
+   Generating static pages (4/8) 
+   Generating static pages (6/8) 
+ ✓ Generating static pages (8/8)
+   Finalizing page optimization ...
+   Collecting build traces ...
+
+Route (app)                              Size     First Load JS
+┌ ○ /                                    150 B          87.4 kB
+├ ○ /_not-found                          873 B          88.1 kB
+├ ○ /documents                           3.54 kB         103 kB
+├ ○ /query                               7.2 kB          107 kB
+└ ○ /status                              3.1 kB         90.4 kB
++ First Load JS shared by all            87.3 kB
+  ├ chunks/117-a7ab992f539b45f7.js       31.7 kB
+  ├ chunks/fd9d1056-9e191f0896c1d560.js  53.6 kB
+  └ other shared chunks (total)          1.89 kB
+
+
+○  (Static)  prerendered as static content
+
