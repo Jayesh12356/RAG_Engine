@@ -64,6 +64,11 @@ class Settings(BaseSettings):
     PDF_IMAGE_PAGE_CHAR_THRESHOLD: int = 60
     PDF_IMAGE_RATIO_THRESHOLD: float = 0.6
     OCR_ENABLED: bool = True
+    # OCR_MODE controls how OCR is performed when OCR_ENABLED is true:
+    # - "tesseract": local Tesseract only
+    # - "vision": Vision model only (falls back to Tesseract if Vision is unavailable)
+    # - "hybrid": Tesseract first, then optional Vision fallback on low confidence
+    OCR_MODE: Literal["tesseract", "vision", "hybrid"] = "hybrid"
     OCR_LANGUAGES: str = "eng+hin"
     OCR_RENDER_DPI: int = 300
     OCR_TEXT_CONFIDENCE_THRESHOLD: float = 0.35

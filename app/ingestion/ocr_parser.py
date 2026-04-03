@@ -56,8 +56,6 @@ def _extract_with_tesseract(pix: fitz.Pixmap, languages: str) -> tuple[str, floa
 
 def _select_vision_client() -> tuple[openai.OpenAI | None, str]:
     settings = get_settings()
-    if not settings.OCR_VISION_FALLBACK_ENABLED:
-        return None, ""
     if settings.OPENAI_API_KEY:
         return openai.OpenAI(api_key=settings.OPENAI_API_KEY, base_url="https://api.openai.com/v1"), "openai"
     if settings.OPENROUTER_API_KEY:
@@ -68,13 +66,13 @@ def _select_vision_client() -> tuple[openai.OpenAI | None, str]:
     return None, ""
 
 
-def _extract_with_vision_llm(pix: fitz.Pixmap) -> str:
+def _extract_with_vision_llm(pix: fitz.Pixmap, *, enabled: bool) -> str:
     settings = get_settings()
-    if not settings.OCR_VISION_FALLBACK_ENABLED:
+    if not enabled:
         return ""
     client, provider = _select_vision_client()
     if client is None:
-        logger.info("ocr.vision.skipped", reason="disabled_or_missing_key")
+        logger.info("ocr.vision.skipped", reason="missing_key")
         return ""
 
     png_bytes = pix.tobytes("png")
@@ -119,27 +117,42 @@ def extract_page_text_with_ocr(
     2) Vision LLM fallback when confidence is low
     """
     settings = get_settings()
+    mode = settings.OCR_MODE
     zoom = max(settings.OCR_RENDER_DPI / 72.0, 1.0)
     matrix = fitz.Matrix(zoom, zoom)
     pix = page.get_pixmap(matrix=matrix, alpha=False)
 
-    text, confidence = _extract_with_tesseract(pix, settings.OCR_LANGUAGES)
     used_vision = False
     fallback_used = False
 
-    if settings.OCR_VISION_FALLBACK_ENABLED and confidence < settings.OCR_TEXT_CONFIDENCE_THRESHOLD:
-        fallback_text = _extract_with_vision_llm(pix)
-        fallback_used = True
-        fallback_conf = _score_text_quality(fallback_text)
-        if fallback_conf >= confidence and fallback_text.strip():
-            text = fallback_text
-            confidence = fallback_conf
+    if mode == "vision":
+        vision_text = _extract_with_vision_llm(pix, enabled=True)
+        vision_conf = _score_text_quality(vision_text)
+        if vision_text.strip():
+            text, confidence = vision_text.strip(), vision_conf
             used_vision = True
+        else:
+            text, confidence = _extract_with_tesseract(pix, settings.OCR_LANGUAGES)
+
+    elif mode == "tesseract":
+        text, confidence = _extract_with_tesseract(pix, settings.OCR_LANGUAGES)
+
+    else:
+        text, confidence = _extract_with_tesseract(pix, settings.OCR_LANGUAGES)
+        if settings.OCR_VISION_FALLBACK_ENABLED and confidence < settings.OCR_TEXT_CONFIDENCE_THRESHOLD:
+            fallback_text = _extract_with_vision_llm(pix, enabled=True)
+            fallback_used = True
+            fallback_conf = _score_text_quality(fallback_text)
+            if fallback_conf >= confidence and fallback_text.strip():
+                text = fallback_text
+                confidence = fallback_conf
+                used_vision = True
 
     logger.info(
         "ocr.page.complete",
         pdf_name=pdf_name,
         page_number=page_number,
+        mode=mode,
         confidence=confidence,
         used_vision=used_vision,
         fallback_attempted=fallback_used,

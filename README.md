@@ -75,6 +75,7 @@ If you want OCR for scanned/image PDFs:
 - Ensure **Tesseract** is installed on your machine
 - Configure these env vars (see `.env.example`):
   - `OCR_ENABLED`
+  - `OCR_MODE` (`tesseract` | `vision` | `hybrid`)
   - `OCR_LANGUAGES`
   - `OCR_RENDER_DPI`
   - `OCR_TEXT_CONFIDENCE_THRESHOLD`

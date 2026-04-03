@@ -122,3 +122,12 @@ def test_engine_url_unchanged_with_default_schema(monkeypatch):
 
 def test_app_import_smoke():
     import app.main  # noqa: F401
+
+
+def test_ocr_mode_default_and_override():
+    settings = Settings()
+    assert settings.OCR_MODE in {"tesseract", "vision", "hybrid"}
+    assert settings.OCR_MODE == "hybrid"
+
+    settings_v = Settings(OCR_MODE="vision")
+    assert settings_v.OCR_MODE == "vision"
