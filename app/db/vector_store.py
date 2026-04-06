@@ -73,6 +73,51 @@ class QdrantVectorStore(VectorStore):
     async def hybrid_search(self, collection: str, dense_vec: list[float], sparse_vec: Optional[Dict[str, float]], top_k: int, filter: Optional[Dict[str, Any]] = None) -> List[SearchResult]:
         return await self.search_by_vector(collection, dense_vec, top_k, filter)
 
+    @staticmethod
+    def _extract_qdrant_points(result: Any) -> list[Any]:
+        """Normalize Qdrant response shapes across client versions."""
+        if result is None:
+            return []
+        if isinstance(result, list):
+            return result
+        points = getattr(result, "points", None)
+        if points is not None:
+            return list(points)
+        return []
+
+    async def _query_dense_points(
+        self,
+        *,
+        collection: str,
+        vector: list[float],
+        top_k: int,
+        qdrant_filter: Any,
+    ) -> list[Any]:
+        """
+        Query Qdrant across client API versions.
+        Newer clients expose query_points, while older clients expose search.
+        """
+        query_points = getattr(self.client, "query_points", None)
+        if callable(query_points):
+            result = await query_points(
+                collection_name=collection,
+                query=vector,
+                limit=top_k,
+                query_filter=qdrant_filter,
+            )
+            points = self._extract_qdrant_points(result)
+            if points:
+                return points
+        search = getattr(self.client, "search", None)
+        if callable(search):
+            return await search(
+                collection_name=collection,
+                query_vector=vector,
+                limit=top_k,
+                query_filter=qdrant_filter,
+            )
+        raise AttributeError("Qdrant client does not support query_points or search")
+
     async def search_by_vector(self, collection: str, vector: list[float], top_k: int, filter: Optional[Dict[str, Any]] = None) -> List[SearchResult]:
         from qdrant_client.http.models import Filter, FieldCondition, MatchValue
         qdrant_filter = None
@@ -82,21 +127,22 @@ class QdrantVectorStore(VectorStore):
                 for k, v in filter.items()
             ]
             qdrant_filter = Filter(must=conditions)
-            
-        results = await self.client.search(
-            collection_name=collection,
-            query_vector=vector,
-            limit=top_k,
-            query_filter=qdrant_filter
+
+        results = await self._query_dense_points(
+            collection=collection,
+            vector=vector,
+            top_k=top_k,
+            qdrant_filter=qdrant_filter,
         )
         out = []
         for res in results:
-            payload = res.payload or {}
+            payload = getattr(res, "payload", None) or {}
+            score = getattr(res, "score", 0.0)
             out.append(SearchResult(
                 chunk_id=payload.get("chunk_id", ""),
                 document_id=payload.get("document_id", ""),
                 text=payload.get("text", ""),
-                score=res.score,
+                score=score,
                 metadata=payload
             ))
         return out

@@ -16,7 +16,8 @@ dependencies = [
     "structlog",
     "openai",
     "cohere",
-    "qdrant-client",
+    # Keep within a tested API range; vector_store includes compat for query_points/search.
+    "qdrant-client>=1.9,<2.0",
     "pymilvus",
     "sqlalchemy",
     "asyncpg",
