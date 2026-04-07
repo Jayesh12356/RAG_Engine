@@ -12,6 +12,7 @@ from app.db.relational import get_session_maker, DocumentModel, ChunkModel
 from app.ingestion.pdf_parser import parse_pdf
 from app.ingestion.chunker import chunk_pages
 from app.ingestion.sparse import BM25SparseEncoder
+from app.storage.pdf_storage import get_pdf_storage
 
 logger = structlog.get_logger()
 
@@ -29,7 +30,13 @@ class IngestPipeline:
         self.demo_mode = demo_mode
         self.settings = get_settings()
 
-    async def run(self, pdf_path: str, service_name_override: str | None = None) -> IngestionResult:
+    async def run(
+        self,
+        pdf_path: str,
+        service_name_override: str | None = None,
+        pdf_bytes: bytes | None = None,
+        content_type: str = "application/pdf",
+    ) -> IngestionResult:
         doc_id = str(uuid.uuid4())
         try:
             logger.info("ingestion.start", path=pdf_path)
@@ -75,6 +82,7 @@ class IngestPipeline:
                 
                 for chunk, dense_vec, sparse_vec in zip(batch, dense_vectors, sparse_vectors):
                     payload = chunk.model_dump()
+                    payload["document_id"] = doc_id
                     payload["sparse_vector"] = sparse_vec
                     
                     await vector_store.upsert(
@@ -98,7 +106,7 @@ class IngestPipeline:
                         },
                         created_at=datetime.now()
                     ))
-                    
+
                     for c in chunks:
                         session.add(ChunkModel(
                             id=c.chunk_id,
@@ -110,6 +118,15 @@ class IngestPipeline:
                                 "section_title": c.section_title
                             }
                         ))
+
+            if pdf_bytes is not None:
+                storage = get_pdf_storage()
+                await storage.save_pdf(
+                    document_id=doc_id,
+                    filename=pdf_name,
+                    content_type=content_type or "application/pdf",
+                    pdf_bytes=pdf_bytes,
+                )
 
             logger.info("ingestion.complete", document_id=doc_id, chunks=total_chunks)
             

@@ -90,11 +90,17 @@ class ChatPipeline:
         sources = []
         for r in results:
             pdf_name = r.metadata.get("pdf_name", "Unknown")
+            document_id = r.document_id or r.metadata.get("document_id", "")
+            if document_id:
+                pdf_url = f"/pdfs/by-id/{document_id}"
+            else:
+                # Backward-compatible fallback for old chunks missing document_id payload.
+                pdf_url = f"/pdfs/{pdf_name}"
             sources.append(SourceChunk(
                 chunk_id=r.chunk_id,
                 text=r.text,
                 pdf_name=pdf_name,
-                pdf_url=f"/pdfs/{pdf_name}",
+                pdf_url=pdf_url,
                 page_number=r.metadata.get("page_number", 0),
                 section_title=r.metadata.get("section_title", "Unknown"),
                 score=r.score,

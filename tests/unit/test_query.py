@@ -63,7 +63,7 @@ async def test_pipeline_demo_success(mock_generate):
     assert response.refused == False
     assert response.confidence >= 0.6
     assert len(response.sources) > 0
-    assert response.sources[0].pdf_url.startswith("/pdfs/")
+    assert response.sources[0].pdf_url.startswith("/pdfs/by-id/")
 
 @pytest.mark.asyncio
 @patch("app.query.pipeline.RAGGenerator.generate", new_callable=AsyncMock)
@@ -88,6 +88,21 @@ def test_build_user_prompt_long_mode():
     chunks = [SearchResult(chunk_id="1", document_id="d1", text="Reset steps...", score=0.9)]
     prompt = build_user_prompt("How do I reset my VPN password step by step?", chunks)
     assert "Expected answer length: LONG" in prompt
+
+
+def test_source_url_fallback_for_missing_document_id():
+    from app.query.pipeline import QueryPipeline
+
+    class DummyChunk:
+        chunk_id = "c1"
+        document_id = ""
+        text = "text"
+        score = 0.9
+        payload = {"pdf_name": "legacy.pdf", "page_number": 1, "section_title": "S"}
+
+    sources = QueryPipeline(demo_mode=True)._build_sources([DummyChunk()])
+    assert len(sources) == 1
+    assert sources[0].pdf_url == "/pdfs/legacy.pdf"
 
 
 @pytest.mark.asyncio

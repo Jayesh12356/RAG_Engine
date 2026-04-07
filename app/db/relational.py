@@ -1,6 +1,6 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base
-from sqlalchemy import Column, String, Text, DateTime, JSON, Float, func, select, delete, text
+from sqlalchemy import Column, String, Text, DateTime, JSON, Float, LargeBinary, ForeignKey, func, select, delete, text
 from app.config import get_settings
 import uuid
 
@@ -20,6 +20,16 @@ class ChunkModel(Base):
     document_id = Column(String(255), nullable=False)
     text = Column(Text, nullable=False)
     metadata_ = Column("metadata", JSON, nullable=True)
+
+
+class DocumentFileModel(Base):
+    __tablename__ = "document_files"
+    id = Column(String(255), primary_key=True, default=lambda: str(uuid.uuid4()))
+    document_id = Column(String(255), ForeignKey("documents.id"), nullable=False, unique=True, index=True)
+    filename = Column(String(255), nullable=False)
+    content_type = Column(String(128), nullable=False, default="application/pdf")
+    pdf_blob = Column(LargeBinary, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=func.now())
 
 class ConversationHistoryModel(Base):
     __tablename__ = "conversation_history"

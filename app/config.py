@@ -61,6 +61,9 @@ class Settings(BaseSettings):
     CHUNK_SIZE: int = 512
     CHUNK_OVERLAP: int = 64
     EMBED_BATCH_SIZE: int = 32
+    PDF_STORAGE_BACKEND: Literal["relational", "vector"] = "relational"
+    PDF_VECTOR_COLLECTION: str = "helpdesk_pdf_files"
+    PDF_VECTOR_CHUNK_BYTES: int = 60000
     PDF_IMAGE_PAGE_CHAR_THRESHOLD: int = 60
     PDF_IMAGE_RATIO_THRESHOLD: float = 0.6
     OCR_ENABLED: bool = True

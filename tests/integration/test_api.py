@@ -1,6 +1,7 @@
 import pytest
 from httpx import AsyncClient, ASGITransport
 from unittest.mock import patch, AsyncMock, MagicMock
+from types import SimpleNamespace
 
 from app.main import app
 from app.ingestion.pipeline import IngestionResult
@@ -132,6 +133,37 @@ async def test_documents_list_empty(mock_session_maker, client):
 async def test_pdf_not_found(client):
     response = await client.get("/pdfs/nonexistent.pdf")
     assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+@patch("app.api.routes.get_pdf_storage")
+async def test_pdf_by_id_not_found(mock_get_pdf_storage, client):
+    storage = AsyncMock()
+    storage.get_pdf.return_value = None
+    mock_get_pdf_storage.return_value = storage
+
+    response = await client.get("/pdfs/by-id/missing-doc")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+@patch("app.api.routes.get_pdf_storage")
+async def test_pdf_by_id_serves_blob(mock_get_pdf_storage, client):
+    row = SimpleNamespace(
+        document_id="doc-123",
+        filename="demo.pdf",
+        content_type="application/pdf",
+        pdf_bytes=b"%PDF-1.4 test-bytes",
+    )
+    storage = AsyncMock()
+    storage.get_pdf.return_value = row
+    mock_get_pdf_storage.return_value = storage
+
+    response = await client.get("/pdfs/by-id/doc-123")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/pdf")
+    assert "inline;" in response.headers.get("content-disposition", "")
+    assert response.content.startswith(b"%PDF-1.4")
 
 @pytest.mark.asyncio
 @patch("app.api.routes.session_maker")

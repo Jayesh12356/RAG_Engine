@@ -41,11 +41,17 @@ class QueryPipeline:
         sources = []
         for chunk in reranked_chunks:
             pdf_name = chunk.payload.get("pdf_name", "unknown.pdf")
+            document_id = chunk.document_id or chunk.payload.get("document_id", "")
+            if document_id:
+                pdf_url = f"/pdfs/by-id/{document_id}"
+            else:
+                # Backward-compatible fallback for old chunks missing document_id payload.
+                pdf_url = f"/pdfs/{pdf_name}"
             sources.append(SourceChunk(
                 chunk_id=chunk.chunk_id,
                 text=chunk.text,
                 pdf_name=pdf_name,
-                pdf_url=f"/pdfs/{pdf_name}",
+                pdf_url=pdf_url,
                 page_number=chunk.payload.get("page_number", 0),
                 section_title=chunk.payload.get("section_title", "Unknown"),
                 score=chunk.score,

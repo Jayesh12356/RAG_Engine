@@ -28,6 +28,18 @@ class VectorStore(ABC):
     async def delete(self, collection: str, chunk_ids: List[str]) -> None:
         pass
 
+    @abstractmethod
+    async def upsert_payload(self, collection: str, id: str, payload: Dict[str, Any]) -> None:
+        pass
+
+    @abstractmethod
+    async def fetch_payloads(self, collection: str, filter: Dict[str, Any], limit: int = 10000) -> List[Dict[str, Any]]:
+        pass
+
+    @abstractmethod
+    async def delete_by_filter(self, collection: str, filter: Dict[str, Any]) -> None:
+        pass
+
 class QdrantVectorStore(VectorStore):
     @property
     def supports_sparse(self) -> bool:
@@ -162,6 +174,51 @@ class QdrantVectorStore(VectorStore):
         if point_ids:
             await self.client.delete(collection_name=collection, points_selector=PointIdsList(points=point_ids))
 
+    async def upsert_payload(self, collection: str, id: str, payload: Dict[str, Any]) -> None:
+        await self.upsert(collection=collection, id=id, vector=[0.0], payload=payload)
+
+    async def fetch_payloads(self, collection: str, filter: Dict[str, Any], limit: int = 10000) -> List[Dict[str, Any]]:
+        from qdrant_client.http.models import Filter, FieldCondition, MatchValue
+
+        conditions = [FieldCondition(key=k, match=MatchValue(value=v)) for k, v in filter.items()]
+        qdrant_filter = Filter(must=conditions)
+
+        scroll_method = getattr(self.client, "scroll", None)
+        if not callable(scroll_method):
+            return []
+
+        points: list[Any] = []
+        offset = None
+        while len(points) < limit:
+            response = await scroll_method(
+                collection_name=collection,
+                scroll_filter=qdrant_filter,
+                limit=min(256, max(limit - len(points), 1)),
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            batch, next_offset = (response if isinstance(response, tuple) else (getattr(response, "points", []), getattr(response, "next_page_offset", None)))
+            points.extend(batch or [])
+            if not next_offset:
+                break
+            offset = next_offset
+        return [(getattr(p, "payload", None) or {}) for p in points[:limit]]
+
+    async def delete_by_filter(self, collection: str, filter: Dict[str, Any]) -> None:
+        from qdrant_client.http.models import Filter, FieldCondition, MatchValue
+
+        conditions = [FieldCondition(key=k, match=MatchValue(value=v)) for k, v in filter.items()]
+        qdrant_filter = Filter(must=conditions)
+        delete_method = getattr(self.client, "delete", None)
+        if not callable(delete_method):
+            return
+        try:
+            from qdrant_client.http.models import FilterSelector
+            await delete_method(collection_name=collection, points_selector=FilterSelector(filter=qdrant_filter))
+        except Exception:
+            await delete_method(collection_name=collection, points_selector=qdrant_filter)
+
 
 class MilvusVectorStore(VectorStore):
     @property
@@ -225,6 +282,28 @@ class MilvusVectorStore(VectorStore):
         ids_str = ", ".join([f"'{cid}'" for cid in chunk_ids])
         expr = f"id in [{ids_str}]"
         await self.client.delete(collection_name=collection, filter=expr)
+
+    async def upsert_payload(self, collection: str, id: str, payload: Dict[str, Any]) -> None:
+        # Ensure idempotency by deleting old id before insert.
+        await self.client.delete(collection_name=collection, filter=f"id == '{id}'")
+        data = payload.copy()
+        data["id"] = id
+        data["vector"] = [0.0]
+        await self.client.insert(collection_name=collection, data=[data])
+
+    async def fetch_payloads(self, collection: str, filter: Dict[str, Any], limit: int = 10000) -> List[Dict[str, Any]]:
+        filter_expr = " and ".join(f"{k} == '{v}'" for k, v in filter.items())
+        rows = await self.client.query(
+            collection_name=collection,
+            filter=filter_expr if filter_expr else None,
+            output_fields=["*"],
+            limit=limit,
+        )
+        return rows or []
+
+    async def delete_by_filter(self, collection: str, filter: Dict[str, Any]) -> None:
+        filter_expr = " and ".join(f"{k} == '{v}'" for k, v in filter.items())
+        await self.client.delete(collection_name=collection, filter=filter_expr if filter_expr else None)
 
 
 def get_vector_store() -> VectorStore:

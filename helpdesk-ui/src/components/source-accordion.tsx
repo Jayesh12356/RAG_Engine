@@ -10,6 +10,9 @@ export function SourceAccordion({ sources }: { sources: SourceChunk[] }) {
   if (!sources || sources.length === 0) return null
 
   const visibleSources = sources.slice(0, 5)
+  const buildPdfHref = (source: SourceChunk) => {
+    return `${BASE}${source.pdf_url}#page=${source.page_number}`
+  }
 
   return (
     <Accordion.Root type="single" collapsible className="space-y-2">
@@ -46,7 +49,7 @@ export function SourceAccordion({ sources }: { sources: SourceChunk[] }) {
             </div>
             <div className="mt-3 flex justify-end">
               <a
-                href={`${BASE}/pdfs/${source.pdf_name}#page=${source.page_number}`}
+                href={buildPdfHref(source)}
                 target="_blank"
                 rel="noreferrer"
                 className="btn-secondary text-xs py-1.5 px-3 gap-1"

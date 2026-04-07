@@ -1,5 +1,5 @@
 from fastapi import APIRouter, UploadFile, File, Form, BackgroundTasks, HTTPException, Header
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, Response
 from typing import Optional
 from sqlalchemy import select, delete
 import uuid
@@ -19,6 +19,7 @@ from app.db.relational import get_session_maker, DocumentModel, ChunkModel
 from app.db.vector_store import get_vector_store
 from app.chat.pipeline import ChatPipeline, ChatRequest, ChatResponse
 from app.chat.session import SessionManager
+from app.storage.pdf_storage import get_pdf_storage
 
 logger = structlog.get_logger(__name__)
 router = APIRouter()
@@ -43,10 +44,21 @@ async def health_check(x_demo_mode: Optional[str] = Header(None)):
         demo_mode=demo_mode
     )
 
-async def run_ingest_and_cleanup(tmp_path: str, demo_mode: bool, service_name_override: Optional[str]):
+async def run_ingest_and_cleanup(
+    tmp_path: str,
+    demo_mode: bool,
+    service_name_override: Optional[str],
+    content: bytes,
+    content_type: str,
+):
     try:
         pipeline = IngestPipeline(demo_mode=demo_mode)
-        await pipeline.run(tmp_path, service_name_override)
+        await pipeline.run(
+            tmp_path,
+            service_name_override,
+            pdf_bytes=content,
+            content_type=content_type,
+        )
     except Exception as e:
         logger.error("background_ingest_error", error=str(e), path=tmp_path)
     finally:
@@ -81,7 +93,14 @@ async def ingest_document(
         raise HTTPException(status_code=400, detail=f"Error reading file: {str(e)}")
         
     if background:
-        background_tasks.add_task(run_ingest_and_cleanup, tmp_path, demo_mode, service_name_override)
+        background_tasks.add_task(
+            run_ingest_and_cleanup,
+            tmp_path,
+            demo_mode,
+            service_name_override,
+            content,
+            file.content_type or "application/pdf",
+        )
         return IngestResponse(
             status="processing",
             task_id=task_id
@@ -89,7 +108,12 @@ async def ingest_document(
     else:
         try:
             pipeline = IngestPipeline(demo_mode=demo_mode)
-            result = await pipeline.run(tmp_path, service_name_override)
+            result = await pipeline.run(
+                tmp_path,
+                service_name_override,
+                pdf_bytes=content,
+                content_type=file.content_type or "application/pdf",
+            )
             return IngestResponse(
                 document_id=result.document_id,
                 pdf_name=result.pdf_name,
@@ -221,15 +245,54 @@ async def get_chat_sessions(x_demo_mode: Optional[str] = Header(None)):
 
 @router.get("/pdfs/{pdf_name}")
 async def serve_pdf(pdf_name: str):
-    # Security: prevent path traversal
     safe_name = os.path.basename(pdf_name)
-    pdf_dir = os.path.join(os.getcwd(), "data", "sample_pdfs")
-    pdf_path = os.path.realpath(os.path.join(pdf_dir, safe_name))
-    if not pdf_path.startswith(os.path.realpath(pdf_dir)):
+
+    # 1) Primary compatibility path: lookup by filename in relational metadata, then load bytes via configured storage backend.
+    async with session_maker() as session:
+        stmt = (
+            select(DocumentModel)
+            .where(DocumentModel.filename == safe_name)
+            .order_by(DocumentModel.created_at.desc())
+            .limit(1)
+        )
+        res = await session.execute(stmt)
+        doc = res.scalar_one_or_none()
+    if doc is not None:
+        stored = await get_pdf_storage().get_pdf(doc.id)
+        if stored is not None:
+            return Response(
+                content=stored.pdf_bytes,
+                media_type=stored.content_type or "application/pdf",
+                headers={"Content-Disposition": f'inline; filename="{stored.filename or safe_name}"'},
+            )
+
+    # 2) Legacy filesystem fallback
+    candidate_dirs = [
+        os.path.join(os.getcwd(), "data", "uploaded_pdfs"),
+        os.path.join(os.getcwd(), "data", "sample_pdfs"),
+    ]
+    for pdf_dir in candidate_dirs:
+        base_dir = os.path.realpath(pdf_dir)
+        pdf_path = os.path.realpath(os.path.join(base_dir, safe_name))
+        if not pdf_path.startswith(base_dir):
+            continue
+        if os.path.exists(pdf_path):
+            return FileResponse(pdf_path, media_type="application/pdf")
+    raise HTTPException(status_code=404, detail="PDF not found.")
+
+
+@router.get("/pdfs/by-id/{document_id}")
+async def serve_pdf_by_document_id(document_id: str):
+    storage = get_pdf_storage()
+    stored = await storage.get_pdf(document_id)
+    if stored is None:
         raise HTTPException(status_code=404, detail="PDF not found.")
-    if not os.path.exists(pdf_path):
-        raise HTTPException(status_code=404, detail="PDF not found.")
-    return FileResponse(pdf_path, media_type="application/pdf")
+    filename = stored.filename or f"{document_id}.pdf"
+    return Response(
+        content=stored.pdf_bytes,
+        media_type=stored.content_type or "application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
 
 @router.get("/documents", response_model=DocumentListResponse)
 async def list_documents():
@@ -313,11 +376,15 @@ async def delete_document(document_id: str):
         # 5. Delete doc from relational
         stmt_del_doc = delete(DocumentModel).where(DocumentModel.id == document_id)
         await session.execute(stmt_del_doc)
-        
+
         await session.commit()
+
+    # 6. Delete stored PDF bytes from selected backend
+    storage = get_pdf_storage()
+    await storage.delete_pdf(document_id)
         
-        return DeleteResponse(
-            document_id=document_id,
-            status="deleted",
-            chunks_removed=len(chunk_ids)
-        )
+    return DeleteResponse(
+        document_id=document_id,
+        status="deleted",
+        chunks_removed=len(chunk_ids)
+    )
