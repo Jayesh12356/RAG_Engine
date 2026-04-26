@@ -2,11 +2,11 @@
 
 import * as React from "react"
 import { motion, AnimatePresence } from "framer-motion"
-import { Check, FileUp, Sparkles } from "lucide-react"
+import { Check, FileUp, Sparkles, X as XIcon, AlertCircle, Loader2 } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
-import { postIngest } from "@/lib/api"
+import { postIngest, streamIngestEvents } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
 // Mirror of app/ingestion/router.py SUPPORTED_EXTENSIONS — keep in sync.
@@ -37,48 +37,92 @@ const ACCEPT = [
   ".bmp",
 ].join(",")
 
+interface UploadEntry {
+  id: string
+  file: File
+  progress: number
+  stage: string
+  status: "queued" | "running" | "complete" | "failed"
+  message?: string
+  error?: string
+}
+
 export function UploadZone({ onSuccess }: { onSuccess: () => void }) {
   const [demoMode, setDemoMode] = React.useState(false)
   const [override, setOverride] = React.useState("")
   const [drag, setDrag] = React.useState(false)
   const [busy, setBusy] = React.useState(false)
-  const [progress, setProgress] = React.useState(0)
-  const [done, setDone] = React.useState(false)
+  const [entries, setEntries] = React.useState<UploadEntry[]>([])
   const fileRef = React.useRef<HTMLInputElement>(null)
 
-  const ingest = async (files: FileList | null) => {
-    if (!files || files.length === 0) return
-    const list = Array.from(files)
-    setBusy(true)
-    setDone(false)
-    setProgress(8)
-    try {
-      // Faux-progress while waiting for server response (FormData fetch has no progress)
-      const tick = window.setInterval(() => {
-        setProgress((p) => Math.min(p + Math.random() * 14, 90))
-      }, 220)
-      for (const file of list) {
-        const res = await postIngest(file, override || undefined, undefined, demoMode)
-        toast.success(`Ingested ${res.pdf_name}`, {
-          description: `${res.total_pages} pages • ${res.total_chunks} chunks indexed`,
-        })
-      }
-      window.clearInterval(tick)
-      setProgress(100)
-      setDone(true)
-      onSuccess()
-      window.setTimeout(() => {
+  const updateEntry = React.useCallback((id: string, patch: Partial<UploadEntry>) => {
+    setEntries((prev) => prev.map((e) => (e.id === id ? { ...e, ...patch } : e)))
+  }, [])
+
+  const removeEntry = React.useCallback((id: string) => {
+    setEntries((prev) => prev.filter((e) => e.id !== id))
+  }, [])
+
+  const ingest = React.useCallback(
+    async (files: FileList | null) => {
+      if (!files || files.length === 0) return
+      const list = Array.from(files)
+      setBusy(true)
+
+      const newEntries: UploadEntry[] = list.map((file, i) => ({
+        id: `${Date.now()}-${i}-${file.name}`,
+        file,
+        progress: 0,
+        stage: "queued",
+        status: "queued",
+      }))
+      setEntries((prev) => [...newEntries, ...prev])
+
+      try {
+        await Promise.all(
+          newEntries.map(async (entry) => {
+            try {
+              updateEntry(entry.id, { progress: 5, stage: "uploading", status: "running" })
+              const res = await postIngest(entry.file, override || undefined, true, demoMode)
+              if (!res.task_id) {
+                updateEntry(entry.id, {
+                  progress: 100,
+                  stage: "complete",
+                  status: "complete",
+                  message: `${res.total_pages} pages • ${res.total_chunks} chunks`,
+                })
+                return
+              }
+              updateEntry(entry.id, { progress: 12, stage: "queued", status: "running" })
+              await streamIngestEvents(res.task_id, (evt) => {
+                updateEntry(entry.id, {
+                  progress: Math.min(100, evt.progress ?? 0),
+                  stage: evt.stage || evt.status,
+                  status: (evt.status as UploadEntry["status"]) || "running",
+                  message: evt.message ?? undefined,
+                  error: evt.error ?? undefined,
+                })
+              })
+              updateEntry(entry.id, { progress: 100, status: "complete" })
+              toast.success(`Ingested ${entry.file.name}`)
+            } catch (err) {
+              const message = err instanceof Error ? err.message : "Ingest failed"
+              updateEntry(entry.id, { status: "failed", error: message })
+              toast.error(`${entry.file.name}: ${message}`)
+            }
+          }),
+        )
+        onSuccess()
+      } finally {
         setBusy(false)
-        setProgress(0)
-        setDone(false)
-      }, 1400)
-    } catch (err) {
-      setBusy(false)
-      setProgress(0)
-      const message = err instanceof Error ? err.message : "Ingest failed"
-      toast.error(message)
-    }
-  }
+        // Auto-cleanup completed entries after a short success window
+        window.setTimeout(() => {
+          setEntries((prev) => prev.filter((e) => e.status !== "complete"))
+        }, 4000)
+      }
+    },
+    [demoMode, override, onSuccess, updateEntry],
+  )
 
   return (
     <div
@@ -101,46 +145,16 @@ export function UploadZone({ onSuccess }: { onSuccess: () => void }) {
       <div className="flex flex-col items-center gap-3 text-center">
         <div className="relative flex h-14 w-14 items-center justify-center">
           <AnimatePresence mode="wait">
-            {done ? (
+            {busy ? (
               <motion.div
-                key="success"
-                initial={{ scale: 0.6, opacity: 0 }}
+                key="busy"
+                initial={{ scale: 0.85, opacity: 0 }}
                 animate={{ scale: 1, opacity: 1 }}
-                exit={{ scale: 0.6, opacity: 0 }}
-                className="grid h-14 w-14 place-items-center rounded-full bg-success/15 ring-2 ring-success/40"
+                exit={{ scale: 0.85, opacity: 0 }}
+                className="grid h-14 w-14 place-items-center rounded-2xl border border-primary/40 bg-primary/10 text-primary shadow-card"
               >
-                <Check className="h-6 w-6 text-success" />
+                <Loader2 className="h-6 w-6 animate-spin" />
               </motion.div>
-            ) : busy ? (
-              <motion.svg
-                key="ring"
-                width={56}
-                height={56}
-                viewBox="0 0 56 56"
-                className="-rotate-90"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-              >
-                <circle cx={28} cy={28} r={24} stroke="hsl(var(--border))" strokeWidth={4} fill="transparent" />
-                <motion.circle
-                  cx={28}
-                  cy={28}
-                  r={24}
-                  stroke="url(#u-gradient)"
-                  strokeWidth={4}
-                  fill="transparent"
-                  strokeLinecap="round"
-                  strokeDasharray={2 * Math.PI * 24}
-                  animate={{ strokeDashoffset: 2 * Math.PI * 24 * (1 - progress / 100) }}
-                  transition={{ duration: 0.4 }}
-                />
-                <defs>
-                  <linearGradient id="u-gradient" x1="0" y1="0" x2="1" y2="0">
-                    <stop offset="0%" stopColor="hsl(var(--primary))" />
-                    <stop offset="100%" stopColor="hsl(var(--accent))" />
-                  </linearGradient>
-                </defs>
-              </motion.svg>
             ) : (
               <motion.div
                 key="idle"
@@ -155,7 +169,7 @@ export function UploadZone({ onSuccess }: { onSuccess: () => void }) {
           </AnimatePresence>
         </div>
         <h3 className="text-2xl font-semibold tracking-[-0.02em] text-fg">
-          {busy ? "Ingesting…" : done ? "All set!" : "Upload to your workspace"}
+          {busy ? "Ingesting…" : "Upload to your workspace"}
         </h3>
         <p className="max-w-md text-sm text-muted-fg">
           Drag &amp; drop PDFs, Word, PowerPoint, Excel/CSV, text, Markdown, HTML, JSON or images.
@@ -194,6 +208,76 @@ export function UploadZone({ onSuccess }: { onSuccess: () => void }) {
           </label>
         </div>
       </div>
+
+      {entries.length > 0 && (
+        <div className="mt-6 space-y-2">
+          <AnimatePresence initial={false}>
+            {entries.map((entry) => (
+              <motion.div
+                key={entry.id}
+                layout
+                initial={{ opacity: 0, y: -4 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.97 }}
+                transition={{ duration: 0.18 }}
+                className={cn(
+                  "flex items-center gap-3 rounded-md border border-border bg-card/80 px-3 py-2",
+                  entry.status === "failed" && "border-rose-500/40",
+                  entry.status === "complete" && "border-success/40",
+                )}
+              >
+                <span className="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-muted/60 text-muted-fg">
+                  {entry.status === "complete" ? (
+                    <Check className="h-3.5 w-3.5 text-success" />
+                  ) : entry.status === "failed" ? (
+                    <AlertCircle className="h-3.5 w-3.5 text-rose-500" />
+                  ) : (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+                  )}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-2 text-xs">
+                    <span className="truncate font-medium text-fg">{entry.file.name}</span>
+                    <span className="shrink-0 tabular-nums text-muted-fg">
+                      {entry.status === "failed"
+                        ? "Failed"
+                        : entry.status === "complete"
+                        ? "Done"
+                        : `${Math.round(entry.progress)}%`}
+                    </span>
+                  </div>
+                  <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-muted">
+                    <motion.div
+                      className={cn(
+                        "h-full rounded-full",
+                        entry.status === "failed"
+                          ? "bg-rose-500"
+                          : entry.status === "complete"
+                          ? "bg-success"
+                          : "bg-gradient-to-r from-primary to-accent",
+                      )}
+                      initial={{ width: 0 }}
+                      animate={{ width: `${entry.progress}%` }}
+                      transition={{ duration: 0.25 }}
+                    />
+                  </div>
+                  <p className="mt-1 truncate text-[10.5px] text-muted-fg">
+                    {entry.error || entry.message || entry.stage}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => removeEntry(entry.id)}
+                  className="rounded-md p-1 text-muted-fg hover:bg-muted hover:text-fg"
+                  aria-label="Dismiss"
+                >
+                  <XIcon className="h-3.5 w-3.5" />
+                </button>
+              </motion.div>
+            ))}
+          </AnimatePresence>
+        </div>
+      )}
       {drag && (
         <span
           aria-hidden

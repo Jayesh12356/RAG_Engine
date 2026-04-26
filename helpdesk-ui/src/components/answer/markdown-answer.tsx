@@ -5,13 +5,18 @@ import ReactMarkdown, { type Components } from "react-markdown"
 import remarkGfm from "remark-gfm"
 import remarkMath from "remark-math"
 import rehypeKatex from "rehype-katex"
-import { cn } from "@/lib/utils"
+import { cleanPdfName, cn } from "@/lib/utils"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
+import type { Citation } from "@/types"
 import { ChartBlock } from "./chart-block"
 import { CodeBlock } from "./code-block"
 import { MermaidBlock } from "./mermaid-block"
+import { citationToTarget, useSourceViewer } from "./source-viewer"
 
 const REMARK_PLUGINS = [remarkGfm, remarkMath]
 const REHYPE_PLUGINS = [rehypeKatex]
+
+const CITATION_REGEX = /\[(\d+)\]/g
 
 function extractText(node: React.ReactNode): string {
   if (node == null || typeof node === "boolean") return ""
@@ -31,13 +36,145 @@ export interface MarkdownAnswerProps {
   content: string
   streaming?: boolean
   className?: string
+  citations?: Citation[]
+}
+
+function tokensWithCitations(
+  raw: string,
+  citations: Citation[],
+  onOpen: (citation: Citation) => void,
+): React.ReactNode[] {
+  if (!raw) return []
+  if (!citations || citations.length === 0) return [raw]
+
+  const out: React.ReactNode[] = []
+  let lastIndex = 0
+  CITATION_REGEX.lastIndex = 0
+  let match: RegExpExecArray | null
+  let keyCounter = 0
+  while ((match = CITATION_REGEX.exec(raw)) !== null) {
+    const [token, idxStr] = match
+    const idx = parseInt(idxStr, 10) - 1
+    const citation = citations[idx]
+    if (match.index > lastIndex) {
+      out.push(raw.slice(lastIndex, match.index))
+    }
+    if (citation) {
+      out.push(
+        <CitationMarker
+          key={`cite-${match.index}-${keyCounter++}`}
+          index={idx + 1}
+          citation={citation}
+          onClick={() => onOpen(citation)}
+        />,
+      )
+    } else {
+      out.push(token)
+    }
+    lastIndex = match.index + token.length
+  }
+  if (lastIndex < raw.length) {
+    out.push(raw.slice(lastIndex))
+  }
+  return out
+}
+
+function transformWithCitations(
+  children: React.ReactNode,
+  citations: Citation[],
+  onOpen: (citation: Citation) => void,
+): React.ReactNode {
+  if (!citations || citations.length === 0) return children
+  return React.Children.map(children, (child) => {
+    if (typeof child === "string") {
+      const tokens = tokensWithCitations(child, citations, onOpen)
+      return <>{tokens}</>
+    }
+    if (
+      typeof child === "object" &&
+      child !== null &&
+      "props" in child &&
+      (child as { props?: { children?: React.ReactNode } }).props?.children !== undefined
+    ) {
+      const node = child as React.ReactElement<{ children?: React.ReactNode }>
+      const newChildren = transformWithCitations(node.props.children, citations, onOpen)
+      return React.cloneElement(node, undefined, newChildren as React.ReactNode)
+    }
+    return child
+  })
+}
+
+function CitationMarker({
+  index,
+  citation,
+  onClick,
+}: {
+  index: number
+  citation: Citation
+  onClick: () => void
+}) {
+  const fileLabel = cleanPdfName(citation.pdf_name) || "source"
+  const pageLabel = citation.page_number ? `p.${citation.page_number}` : null
+  const sectionLabel = citation.section_title && citation.section_title !== "Unknown"
+    ? citation.section_title
+    : null
+  const span = citation.text_span?.text?.trim()
+
+  return (
+    <TooltipProvider delayDuration={120}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={onClick}
+            aria-label={`Open citation ${index} from ${fileLabel}`}
+            className={cn(
+              "mx-0.5 inline-flex h-5 min-w-[1.5rem] items-center justify-center rounded-full border border-primary/30 bg-primary/10 px-1.5 align-middle text-[11px] font-semibold text-primary",
+              "transition-colors duration-150 hover:border-primary/55 hover:bg-primary/20",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-bg",
+            )}
+          >
+            {index}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent
+          side="top"
+          align="center"
+          className="max-w-sm space-y-1.5 rounded-lg border border-border bg-card p-3 text-[12px] leading-relaxed text-fg shadow-card"
+        >
+          <div className="flex items-baseline justify-between gap-2">
+            <span className="truncate font-semibold text-fg">{fileLabel}</span>
+            {pageLabel ? (
+              <span className="shrink-0 text-[11px] text-muted-fg">{pageLabel}</span>
+            ) : null}
+          </div>
+          {sectionLabel ? (
+            <div className="text-[11px] text-muted-fg">{sectionLabel}</div>
+          ) : null}
+          {span ? (
+            <p className="line-clamp-3 text-fg/90">{span}</p>
+          ) : (
+            <p className="text-muted-fg">Click to open source</p>
+          )}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  )
 }
 
 export function MarkdownAnswer({
   content,
   streaming = false,
   className,
+  citations,
 }: MarkdownAnswerProps) {
+  const sourceViewer = useSourceViewer()
+  const onOpenCitation = React.useCallback(
+    (citation: Citation) => {
+      sourceViewer.open(citationToTarget(citation))
+    },
+    [sourceViewer],
+  )
   const components: Components = React.useMemo(
     () => ({
       // Code blocks dispatch by language to specialised renderers when not streaming.
@@ -144,7 +281,7 @@ export function MarkdownAnswer({
             className="border-b border-border/60 px-3 py-2 align-top text-fg"
             {...rest}
           >
-            {children}
+            {transformWithCitations(children, citations || [], onOpenCitation)}
           </td>
         )
       },
@@ -172,7 +309,7 @@ export function MarkdownAnswer({
       li({ children, ...rest }) {
         return (
           <li className="leading-relaxed" {...rest}>
-            {children}
+            {transformWithCitations(children, citations || [], onOpenCitation)}
           </li>
         )
       },
@@ -182,7 +319,7 @@ export function MarkdownAnswer({
             className="my-3 border-l-2 border-primary/50 bg-primary/5 px-3 py-2 text-fg/90"
             {...rest}
           >
-            {children}
+            {transformWithCitations(children, citations || [], onOpenCitation)}
           </blockquote>
         )
       },
@@ -210,7 +347,7 @@ export function MarkdownAnswer({
       p({ children, ...rest }) {
         return (
           <p className="my-2 leading-relaxed text-fg" {...rest}>
-            {children}
+            {transformWithCitations(children, citations || [], onOpenCitation)}
           </p>
         )
       },
@@ -225,7 +362,7 @@ export function MarkdownAnswer({
         )
       },
     }),
-    [streaming],
+    [streaming, citations, onOpenCitation],
   )
 
   return (

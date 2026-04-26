@@ -37,10 +37,19 @@ That is the fastest path from `git clone` to a working browser tab.
 - **Unified evidence and confidence gates** ([`app/query/gates.py`](app/query/gates.py)) shared by `/query` and `/chat` — prefer "I don't know" over hallucinations.
 - **Optional grounded citations** in API responses (`include_citations: true`).
 - **Provider failover** for completion *and* embeddings (Groq / OpenAI / OpenRouter, plus Cohere for embeddings) with bounded retries on streaming connections.
-- **Multi-turn chat** with session storage and short-term history on top of the same retrieval pipeline.
+- **Multi-turn chat** with session storage, short-term history and **branching** (fork from any prior turn into a new session) on top of the same retrieval pipeline.
+- **Document versioning** — re-uploading a file with the same original name increments `documents.version` instead of creating an orphaned duplicate. The pipeline keys versioning off the *user-facing* filename, not the temp upload path.
+- **PII redaction at ingest** — opt-in regex (or presidio) pass that scrubs emails, phone numbers, IPs, SSN/PAN/Aadhaar, credit-card-style sequences, URLs, and DOBs **before** embedding so vectors, BM25, citations, and source previews never see the raw value.
+- **Sliding-window rate limiting** on `/query` and `/chat` — independent per-IP and per-cookie windows with `Retry-After` and `X-RateLimit-Scope` headers plus a structured `detail` JSON the UI translates into a toast.
+- **Outbound webhooks** for `ingestion.complete`, `query.completed`, and `query.refused`, with HMAC signing, an admin CRUD surface, and a test endpoint that delivers regardless of the subscription's `enabled` flag.
 - **Streaming APIs** via Server-Sent Events: `/query/stream` and `/chat/stream` emit `delta` events followed by a `final` event (with optional citations).
 - **Rich visual answers** — Markdown answers render Mermaid diagrams, KaTeX math, syntax-highlighted code (Shiki), Recharts charts and (when the active visual model supports it) generated images. Visual richness is detected automatically from the model name pattern; the user just asks a question.
-- **Premium Next.js UI** — auth shell, sidebar/topbar app shell, query + chat surfaces, document library and a live status page. Single-token typography (15/14/13/12/11px tiers), accessible Radix primitives, light + dark themes, mobile-first.
+- **Premium Next.js UI** — auth shell, sidebar/topbar app shell, query + chat surfaces, document library (clean filenames + copyable short document IDs + even-height cards) and a live status page. Single-token typography (15/14/13/12/11px tiers), accessible Radix primitives, light + dark themes, mobile-first.
+- **Auto-summary on ingest** — one LLM call produces a 2-3 sentence abstract stored in `documents.summary`; surfaced in the inspect sheet and search.
+- **Operator surfaces** — `/health` reports uptime + DB pool + vector index size + queue depth; `/metrics/recent` and `/logs/recent` power the live status page; `/preferences` and `/settings/schema` back the in-app settings panel.
+- **Lightweight in-place migrations** — startup runs an idempotent migration that adds new columns (`documents.summary/tags/version`, `chat_sessions.title/parent_session_id/parent_turn_id`) when older databases are encountered, so deploys never require a manual ALTER.
+- **Admin CLI** — `python -m app.cli {ingest,query,clear-cache,export-corpus,eval}` covers ops without a browser.
+- **Typed SDKs** — `python -m scripts.gen_sdk` regenerates a Python (`app/sdk/python`) and TypeScript (`helpdesk-ui/src/lib/sdk`) client from the live OpenAPI schema.
 - **Generic refusal on errors** — pipelines never leak raw exceptions to clients.
 
 ---
@@ -201,24 +210,28 @@ Notes:
 ## API Surface
 
 - **Health**
-  - `GET /health` — returns provider, vector_db, relational_db, demo_mode, `visual_capable`, `image_gen_active`.
+  - `GET /health` — returns provider, vector_db, relational_db, demo_mode, `visual_capable`, `image_gen_active`, plus operational counters: `uptime_seconds`, `db_pool` (size / checked_in / checked_out / overflow), `vector_index_size`, `queue_depth`.
 - **Ingestion & documents**
-  - `POST /ingest` — accepts every supported document type (see `app/ingestion/router.py`).
-  - `GET /documents`
-  - `GET /documents/{document_id}/chunks`
-  - `DELETE /documents/{document_id}`
-  - `GET /pdfs/{pdf_name}` (serves original PDFs for source links)
+  - `POST /ingest` — accepts every supported document type (see `app/ingestion/router.py`); SSE progress is delivered via `task_id`.
+  - `GET /documents` / `GET /documents/{document_id}/chunks` / `DELETE /documents/{document_id}`.
+  - `GET /pdfs/{pdf_name}` and `GET /pdfs/by-id/{document_id}` for source links.
+  - `GET /tags` and `POST /documents/{document_id}/tags` for tag/space management.
 - **Query**
   - `POST /query` — standard request/response.
   - `POST /query/stream` — SSE streaming (`delta` + `final`).
 - **Chat**
-  - `POST /chat`
-  - `POST /chat/stream` — SSE streaming.
-  - `GET /chat/sessions`
-  - `GET /chat/{session_id}/history`
-  - `DELETE /chat/{session_id}`
+  - `POST /chat` / `POST /chat/stream`.
+  - `GET /chat/sessions` / `GET /chat/{session_id}/history` / `DELETE /chat/{session_id}`.
+  - `POST /chat/sessions/{session_id}/branch` — fork the session from a specific turn into a new one (`parent_session_id` + `parent_turn_id` are persisted on the child).
+- **Operator**
+  - `GET /metrics/recent` / `GET /logs/recent` — power the live status page.
+  - `GET /preferences` / `PUT /preferences` — per-cookie UI preferences.
+  - `GET /settings/schema` — declarative form schema for the in-app settings panel.
+  - `GET /webhooks` / `POST /webhooks` / `PATCH /webhooks/{id}` / `DELETE /webhooks/{id}` / `POST /webhooks/{id}/test` — subscription CRUD plus a test-delivery endpoint that bypasses the `enabled` flag.
 
 Both `/query` and `/chat` accept an optional `include_citations: true` to receive a structured `citations` list pointing back to the retrieved chunks (chunk id, document id, source name, page number, section title, score).
+
+`/query` and `/chat` are protected by an in-process sliding-window rate limiter (per-IP **and** per-cookie). Limits are tuned via `RATE_LIMIT_PER_IP_PER_MIN` (default 60) and `RATE_LIMIT_PER_COOKIE_PER_MIN` (default 600). On rejection the response carries `Retry-After`, `X-RateLimit-Scope`, and a JSON `detail` of the form `{"message", "scope", "retry_after_seconds"}` that the frontend reads to render a toast.
 
 For full payload shapes and behaviour, see [`docs/reference/MANUAL.md`](docs/reference/MANUAL.md).
 
@@ -305,6 +318,123 @@ All behaviour is driven by environment variables loaded into `app/config.py`. Th
 | `CHAT_HISTORY_TURNS` | `5` | Recent turns surfaced in the chat prompt. |
 | `MAX_SESSIONS` | `100` | In-memory session ceiling. |
 | `CORS_ALLOW_ORIGINS` | `localhost` | Comma-separated origins allowed by FastAPI. |
+
+### Rate limiting, PII redaction, webhooks
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `RATE_LIMIT_PER_IP_PER_MIN` | `60` | Per-IP sliding-window cap on `/query` + `/chat`. |
+| `RATE_LIMIT_PER_COOKIE_PER_MIN` | `600` | Per-cookie sliding-window cap. Both scopes are evaluated on every request. |
+| `INGEST_REDACT_PII` | `false` | Toggle the deterministic PII scrub at ingest. |
+| `INGEST_REDACT_BACKEND` | `regex` | `regex` (built-in) or `presidio` (opt-in extra) — combined when set to `presidio`. |
+| `WEBHOOKS_ENABLED` | `true` | Global gate for outbound webhook dispatch. The `/webhooks/{id}/test` endpoint always delivers regardless of this flag so operators can validate signatures. |
+| `WEBHOOKS_TIMEOUT_SEC` | `5.0` | Per-call timeout for webhook deliveries. |
+
+### Auto-summary, answer cache, retrieval expansion
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `AUTO_SUMMARY_ENABLED` | `true` | One LLM call after ingest writes a 2-3 sentence abstract into `documents.summary`. |
+| `ANSWER_CACHE_ENABLED` | `true` | LRU answer cache keyed by `(question, top_k, service_category, corpus_version)`. |
+| `ANSWER_CACHE_BACKEND` | `memory` | `memory` (LRU) or `redis` (shared, multi-worker). |
+| `ANSWER_CACHE_MAXSIZE` / `ANSWER_CACHE_TTL_SEC` | `256` / `600` | Cache sizing knobs. |
+| `HYDE_ENABLED` / `MULTI_QUERY_ENABLED` | `false` / `false` | Hypothetical-document and multi-query expansion. |
+| `CHAT_COREFERENCE_REWRITE` | `false` | Resolves "it"/"that" follow-ups into a standalone search query. |
+| `ANSWER_VERIFIER_ENABLED` | `false` | Optional second LLM pass that scores groundedness and regenerates once when weak. |
+
+---
+
+## Operator surfaces
+
+### Document versioning
+
+Re-uploading a file with the same original name (e.g. `Onboarding.pdf`) increments `documents.version` rather than creating a duplicate row. The pipeline keys version lookup off the **user-facing** filename — never the temp upload path — so a document at `/tmp/{task_id}_Onboarding.pdf` is still tracked as `Onboarding.pdf` in the relational store and Qdrant payload. Vector points carry the canonical `pdf_name`, and the documents page shows a `v2`, `v3`, … chip when version > 1.
+
+### PII redaction
+
+Set `INGEST_REDACT_PII=1` to scrub PII before embedding. The default backend (`regex`) catches:
+
+`EMAIL`, `URL`, `IPV4`, `CREDIT_CARD`, `AADHAAR`, `PAN`, `SSN`, `PHONE`, `DATE_OF_BIRTH`.
+
+Each match is replaced with a stable `[REDACTED_*]` token so vectors, BM25 indices, citations and source previews never see the original value. With `INGEST_REDACT_BACKEND=presidio` (after `pip install -e ".[pii]"`) the regex result is unioned with Presidio's analyzer for broader recall. Aggregate counts per entity are surfaced via the `ingestion.redacted` structured-log line.
+
+### Rate limit response contract
+
+```http
+HTTP/1.1 429 Too Many Requests
+Retry-After: 49
+X-RateLimit-Scope: cookie
+Content-Type: application/json
+
+{"detail":{"message":"Too many requests. Please slow down.","scope":"cookie","retry_after_seconds":49}}
+```
+
+The UI's `RateLimitError` reads `Retry-After`, `X-RateLimit-Scope`, and the structured `detail` to render a toast such as *"Too many requests. Please slow down. — Try again in 49s."* The IP scope is enforced first, then the cookie scope, so neither dimension can be bypassed.
+
+### Webhooks
+
+Subscriptions are persisted in the relational DB (`webhook_subscriptions` table) and managed entirely through the API:
+
+```bash
+# Create
+curl -X POST http://localhost:8000/webhooks \
+  -H 'Content-Type: application/json' \
+  -d '{"event":"ingestion.complete","url":"https://hooks.example/it","secret":"s3cr3t"}'
+
+# List
+curl http://localhost:8000/webhooks
+
+# Test (always delivers, regardless of "enabled")
+curl -X POST http://localhost:8000/webhooks/<id>/test
+
+# Patch / Delete
+curl -X PATCH http://localhost:8000/webhooks/<id> -d '{"enabled":false}' -H 'Content-Type: application/json'
+curl -X DELETE http://localhost:8000/webhooks/<id>
+```
+
+Every delivery includes an `X-Helpdesk-Event` header and, when a `secret` is configured, an `X-Helpdesk-Signature` (HMAC-SHA256). Valid event types are listed in `WEBHOOK_EVENTS`: `ingestion.complete`, `query.completed`, `query.refused`.
+
+### Lightweight in-place migrations
+
+`init_db()` (run on every startup) executes an idempotent migration step that adds new columns when an older schema is encountered:
+
+| Table | Columns added on demand |
+| --- | --- |
+| `documents` | `summary`, `tags`, `version` |
+| `chat_sessions` | `title`, `parent_session_id`, `parent_turn_id` |
+
+This means upgrading the application against an existing database does not require a manual `ALTER TABLE` step — the columns appear automatically the first time a newer build boots. Schema-level migrations that rename / drop / re-type columns still go through `scripts/migrate_*.py`.
+
+### Admin CLI
+
+```bash
+python -m app.cli ingest path/to/file.pdf --service-name "IT Helpdesk"
+python -m app.cli query "How do I reset the VPN?" --include-citations --top-k 8
+python -m app.cli export-corpus dump.jsonl
+python -m app.cli clear-cache
+python -m app.cli eval --golden tests/data/golden.jsonl
+```
+
+Each subcommand imports lazily so cold-start cost matches what the subcommand actually needs.
+
+### Typed SDKs
+
+Regenerate from the live FastAPI OpenAPI schema:
+
+```bash
+# In-process generation (default)
+python -m scripts.gen_sdk
+
+# Or against a running server
+python -m scripts.gen_sdk --url http://localhost:8000/openapi.json
+```
+
+Outputs:
+
+- Python: `app/sdk/python/{__init__.py,client.py}` — `HelpdeskClient` wraps every route on top of `httpx`, accepts a cookie string for auth.
+- TypeScript: `helpdesk-ui/src/lib/sdk/{client.ts,models.ts,index.ts}` — `createHelpdeskClient({ baseUrl, cookie })` returns a typed object whose method names match the FastAPI `operationId`s.
+
+Both clients are checked into the repo so consumers do not need a build step; CI runs the generator on schema changes.
 
 ---
 

@@ -16,7 +16,13 @@ class HybridSearch:
         if not demo_mode:
             self.vector_store = get_vector_store()
 
-    async def search(self, question: str, service_category: str | None, top_k: int) -> list[SearchResult]:
+    async def search(
+        self,
+        question: str,
+        service_category: str | None,
+        top_k: int,
+        tags: list[str] | None = None,
+    ) -> list[SearchResult]:
         if self.demo_mode:
             logger.info("hybrid_search_demo", question=question, category=service_category)
             return [
@@ -54,11 +60,19 @@ class HybridSearch:
                 sparse_vector_raw = sparse_encoder.encode(question)
                 sparse_vector = {str(k): v for k, v in sparse_vector_raw.items()}
 
-            filter_dict = None
+            filter_dict: dict | None = None
             if service_category and service_category.upper() != "GENERAL":
-                # The payload field is 'service_name', not 'service_category'
-                # We do a case-insensitive search by using the exact category
+                # The payload field is 'service_name', not 'service_category'.
+                # We do a case-insensitive search by using the exact category.
                 filter_dict = {"service_name": service_category}
+            if tags:
+                # Spaces filter (Wave 2.9): keep only chunks whose payload
+                # ``tags`` array intersects the supplied list. Using the
+                # ``$in`` convention so individual back-ends can map to their
+                # native list-membership clause (Qdrant ``MatchAny``, Milvus
+                # ``in``, etc.).
+                filter_dict = filter_dict or {}
+                filter_dict["tags"] = {"$in": list(tags)}
 
             logger.info("hybrid_search_vector_store_start", filter=filter_dict)
             results = await self.vector_store.hybrid_search(

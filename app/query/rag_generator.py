@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from app.config import get_settings
 from app.llm import client as llm_client
 from app.llm.image_client import post_process_answer as _post_process_images
-from app.models.query import Citation, SearchResult
+from app.models.query import Citation, SearchResult, TextSpan
 
 logger = structlog.get_logger(__name__)
 settings = get_settings()
@@ -358,10 +358,63 @@ def _extractive_fallback_answer(question: str, chunks: list[SearchResult]) -> st
 # ──────────────────────────────────────────────────────────────────────────
 # Citations
 # ──────────────────────────────────────────────────────────────────────────
-def build_citations(chunks: list[SearchResult]) -> list[Citation]:
+_SENTENCE_RX = re.compile(r"[^.!?\n]+(?:[.!?]+|$)")
+
+
+def _best_span_for_question(
+    question: str, chunk_text: str, max_chars: int = 320
+) -> TextSpan | None:
+    """Pick the sentence (or sentence-pair) within ``chunk_text`` whose token
+    overlap with ``question`` is highest.
+
+    Falls back to the first non-empty sentence when nothing overlaps so the
+    UI always has a usable preview snippet to highlight on hover.
+    """
+    text = (chunk_text or "").strip()
+    if not text:
+        return None
+    q_tokens = _tokens(question)
+
+    sentences: list[tuple[int, int, str]] = []
+    for m in _SENTENCE_RX.finditer(chunk_text):
+        sent = m.group(0).strip()
+        if sent:
+            sentences.append((m.start(), m.end(), sent))
+    if not sentences:
+        snippet = text[:max_chars]
+        return TextSpan(text=snippet, start=0, end=len(snippet))
+
+    best_idx = -1
+    best_score = 0.0
+    if q_tokens:
+        for i, (_, _, sent) in enumerate(sentences):
+            overlap = len(_tokens(sent) & q_tokens) / max(1, len(q_tokens))
+            if overlap > best_score:
+                best_score = overlap
+                best_idx = i
+
+    if best_idx < 0:
+        s_start, s_end, _ = sentences[0]
+    else:
+        s_start, s_end, _ = sentences[best_idx]
+
+    raw = chunk_text[s_start:s_end]
+    leading = len(raw) - len(raw.lstrip())
+    s_start += leading
+    span_text = chunk_text[s_start:s_end].strip()
+    if len(span_text) > max_chars:
+        span_text = span_text[:max_chars].rstrip()
+    end = s_start + len(span_text)
+    return TextSpan(text=span_text, start=s_start, end=end)
+
+
+def build_citations(
+    chunks: list[SearchResult], question: str = ""
+) -> list[Citation]:
     citations: list[Citation] = []
     for c in chunks:
         meta = getattr(c, "metadata", None) or {}
+        text_span = _best_span_for_question(question, getattr(c, "text", "") or "")
         citations.append(
             Citation(
                 chunk_id=getattr(c, "chunk_id", "") or meta.get("chunk_id", ""),
@@ -370,6 +423,7 @@ def build_citations(chunks: list[SearchResult]) -> list[Citation]:
                 page_number=int(meta.get("page_number", 0) or 0),
                 section_title=meta.get("section_title", ""),
                 score=float(getattr(c, "score", 0.0) or 0.0),
+                text_span=text_span,
             )
         )
     return citations
@@ -417,7 +471,7 @@ class RAGGenerator:
             return GenerationResult(
                 answer=answer,
                 confidence=confidence,
-                citations=build_citations(filtered_chunks),
+                citations=build_citations(filtered_chunks, question=question),
             )
 
         except Exception as e:
@@ -427,6 +481,6 @@ class RAGGenerator:
                 return GenerationResult(
                     answer=fallback_answer,
                     confidence=get_settings().EXTRACTIVE_FALLBACK_CONFIDENCE,
-                    citations=build_citations(filtered_chunks),
+                    citations=build_citations(filtered_chunks, question=question),
                 )
             return GenerationResult(answer=REFUSAL_PHRASE, confidence=0.10, citations=[])

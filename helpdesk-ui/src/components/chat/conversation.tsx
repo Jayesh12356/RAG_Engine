@@ -6,7 +6,7 @@ import { ArrowDown } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { MessageBubble } from "@/components/chat/message-bubble"
 import { ChatEmptyState } from "@/components/chat/empty-state"
-import type { HistoryTurn } from "@/types"
+import type { Citation, HistoryTurn } from "@/types"
 import { cn } from "@/lib/utils"
 
 export interface ConversationProps {
@@ -16,6 +16,8 @@ export interface ConversationProps {
   onSuggestion: (text: string) => void
   onCopy: (text: string) => void
   onRegenerate: () => void
+  onBranch?: (turnId: string) => void
+  citationsByTurn?: Record<string, Citation[]>
   className?: string
 }
 
@@ -26,6 +28,8 @@ export function Conversation({
   onSuggestion,
   onCopy,
   onRegenerate,
+  onBranch,
+  citationsByTurn,
   className,
 }: ConversationProps) {
   const scrollRef = React.useRef<HTMLDivElement>(null)
@@ -60,15 +64,27 @@ export function Conversation({
         className="h-full overflow-y-auto px-4 py-6 md:px-8"
       >
         <div className="mx-auto flex max-w-3xl flex-col gap-7">
-          {messages.map((msg) => (
-            <MessageBubble
-              key={msg.id}
-              message={msg}
-              streaming={msg.id === streamingId}
-              onCopy={onCopy}
-              onRegenerate={onRegenerate}
-            />
-          ))}
+          {messages.map((msg, idx) => {
+            const question =
+              msg.role === "assistant"
+                ? messages
+                    .slice(0, idx)
+                    .reverse()
+                    .find((m) => m.role === "user")?.content
+                : undefined
+            return (
+              <MessageBubble
+                key={msg.id}
+                message={msg}
+                streaming={msg.id === streamingId}
+                onCopy={onCopy}
+                onRegenerate={onRegenerate}
+                onBranch={onBranch}
+                citations={citationsByTurn?.[msg.id]}
+                question={question}
+              />
+            )
+          })}
           <div ref={bottomRef} />
         </div>
       </div>

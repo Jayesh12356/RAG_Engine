@@ -102,57 +102,63 @@ def test_parse_pdf_routes_ocr_for_image_pdf(monkeypatch):
     assert diagnostics.ocr_pages >= 1
     assert "OCR extracted scanned text" in pages[0].text
     
-@pytest.mark.asyncio
-async def test_pipeline_demo(monkeypatch):
+def _build_pipeline_mocks(monkeypatch):
+    """Wire up a session-maker double that mirrors SQLAlchemy's sync/async split.
+
+    ``session.add`` and ``session.execute(...).scalar_one_or_none`` are
+    synchronous on the real ``AsyncSession``, so we keep them as plain
+    ``MagicMock`` calls. Only the protocol-level ``__aenter__``/``__aexit__``
+    coroutines and ``execute``/``commit`` need to be awaitables, otherwise
+    pytest will (correctly) flag the rest as unawaited coroutines.
+    """
+
     async def mock_embed(texts):
         return [[0.0] * 1536 for _ in texts]
+
     monkeypatch.setattr("app.llm.client.embed", mock_embed)
-    
+
     mock_vs = MagicMock()
     mock_vs.upsert = AsyncMock()
     monkeypatch.setattr("app.ingestion.pipeline.get_vector_store", lambda: mock_vs)
-    
-    mock_session_maker = MagicMock()
-    mock_session = AsyncMock()
-    mock_session_maker.return_value = mock_session
-    mock_session.__aenter__.return_value = mock_session
-    
-    mock_begin = AsyncMock()
-    mock_session.begin = MagicMock(return_value=mock_begin)
-    mock_begin.__aenter__.return_value = mock_begin
-    
-    monkeypatch.setattr("app.ingestion.pipeline.get_session_maker", lambda: mock_session_maker)
-    
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none = MagicMock(return_value=None)
+
+    mock_session = MagicMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_session.execute = AsyncMock(return_value=mock_result)
+    mock_session.commit = AsyncMock()
+    mock_session.add = MagicMock()
+
+    mock_begin_ctx = MagicMock()
+    mock_begin_ctx.__aenter__ = AsyncMock(return_value=mock_begin_ctx)
+    mock_begin_ctx.__aexit__ = AsyncMock(return_value=False)
+    mock_session.begin = MagicMock(return_value=mock_begin_ctx)
+
+    mock_session_maker = MagicMock(return_value=mock_session)
+    monkeypatch.setattr(
+        "app.ingestion.pipeline.get_session_maker", lambda: mock_session_maker
+    )
+    return mock_session
+
+
+@pytest.mark.asyncio
+async def test_pipeline_demo(monkeypatch):
+    _build_pipeline_mocks(monkeypatch)
     pipeline = IngestPipeline(demo_mode=True)
     result = await pipeline.run("nonexistent.pdf")
-    
+
     assert result.status == "success"
     assert result.total_chunks > 0
 
+
 @pytest.mark.asyncio
 async def test_pipeline_returns_model(monkeypatch):
-    async def mock_embed(texts):
-        return [[0.0] * 1536 for _ in texts]
-    monkeypatch.setattr("app.llm.client.embed", mock_embed)
-    
-    mock_vs = MagicMock()
-    mock_vs.upsert = AsyncMock()
-    monkeypatch.setattr("app.ingestion.pipeline.get_vector_store", lambda: mock_vs)
-    
-    mock_session_maker = MagicMock()
-    mock_session = AsyncMock()
-    mock_session_maker.return_value = mock_session
-    mock_session.__aenter__.return_value = mock_session
-    
-    mock_begin = AsyncMock()
-    mock_session.begin = MagicMock(return_value=mock_begin)
-    mock_begin.__aenter__.return_value = mock_begin
-    
-    monkeypatch.setattr("app.ingestion.pipeline.get_session_maker", lambda: mock_session_maker)
-    
+    _build_pipeline_mocks(monkeypatch)
     pipeline = IngestPipeline(demo_mode=True)
     result = await pipeline.run("nonexistent.pdf")
-    
+
     assert isinstance(result, IngestionResult)
     assert isinstance(result.document_id, str)
     assert len(result.document_id) > 0

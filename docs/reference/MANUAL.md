@@ -160,8 +160,38 @@ Frontend behaviour:
 - `GET /chat/sessions`
 - `GET /chat/{session_id}/history`
 - `DELETE /chat/{session_id}`
+- `POST /chat/sessions/{session_id}/branch` — fork a session from a specific turn into a new conversation. The new session row carries `parent_session_id` and `parent_turn_id` so the UI can render lineage.
+
+### Operator surfaces
+
+- `GET /metrics/recent` / `GET /logs/recent` — paginated metrics samples and structured-log entries used by `/app/status`.
+- `GET /preferences` / `PUT /preferences` — persist per-cookie UI preferences (theme, layout, default service category, etc.).
+- `GET /settings/schema` — declarative form schema rendered by `/app/settings`.
+- `GET /webhooks` / `POST /webhooks` / `PATCH /webhooks/{id}` / `DELETE /webhooks/{id}` / `POST /webhooks/{id}/test` — subscription CRUD plus a test-delivery endpoint. Valid event types are `ingestion.complete`, `query.completed`, `query.refused` (the canonical list lives in `app.db.relational.WEBHOOK_EVENTS`). The test endpoint uses a dedicated `deliver_to_subscription` helper that bypasses the global `WEBHOOKS_ENABLED` gate and the per-subscription `enabled` flag, so operators can verify signatures without un-pausing the subscription.
+- `GET /tags` / `POST /documents/{document_id}/tags` — tag and Spaces management surfaced on `/app/documents`.
 
 `QueryResponse` and `ChatResponse` both expose `citations: list[Citation]` when requested. A `Citation` carries `chunk_id`, `document_id`, `pdf_name`, `page_number`, `section_title`, and `score`.
+
+`/health` returns:
+
+```json
+{
+  "status": "ok",
+  "llm_provider": "openrouter",
+  "embedding_provider": "openai",
+  "vector_db": "qdrant",
+  "relational_db": "postgres",
+  "demo_mode": false,
+  "visual_capable": false,
+  "image_gen_active": false,
+  "uptime_seconds": 485.27,
+  "db_pool": { "size": 5, "checked_in": 0, "checked_out": 0, "overflow": -5 },
+  "vector_index_size": 211,
+  "queue_depth": 0
+}
+```
+
+`vector_index_size` is collected by `app.observability.runtime.vector_index_size`. The helper transparently awaits async clients (`AsyncQdrantClient.get_collection` returns a coroutine) and falls back to a defensive `0` when the upstream call fails — it never raises into the request handler.
 
 ---
 
@@ -208,6 +238,23 @@ Frontend behaviour:
 
 - `CHAT_HISTORY_TURNS`, `MAX_SESSIONS`.
 
+### Rate limiting, PII redaction, webhooks
+
+- `RATE_LIMIT_PER_IP_PER_MIN` (default `60`) — sliding-window per-IP cap on `/query` + `/chat`.
+- `RATE_LIMIT_PER_COOKIE_PER_MIN` (default `600`) — per-`rag_engine_uid` cap. Both scopes are enforced on every hot request.
+- `INGEST_REDACT_PII` (default off) — toggle the regex/presidio scrub in `app.ingestion.redact`.
+- `INGEST_REDACT_BACKEND` ∈ `{regex, presidio}` — `regex` is built-in, `presidio` requires `pip install -e ".[pii]"` and is unioned with the regex pass.
+- `WEBHOOKS_ENABLED` (default `true`) — global outbound gate.
+- `WEBHOOKS_TIMEOUT_SEC` (default `5.0`) — per-call timeout for webhook deliveries.
+
+### Auto-summary, answer cache, retrieval expansion
+
+- `AUTO_SUMMARY_ENABLED` (default `true`) — populates `documents.summary` after each successful ingest.
+- `ANSWER_CACHE_ENABLED` / `ANSWER_CACHE_BACKEND` / `ANSWER_CACHE_MAXSIZE` / `ANSWER_CACHE_TTL_SEC` — process-LRU or Redis answer cache keyed by `(question, top_k, service_category, corpus_version)`. The cache is bumped automatically on ingest, delete, and CLI `clear-cache`.
+- `HYDE_ENABLED` / `MULTI_QUERY_ENABLED` / `MULTI_QUERY_VARIANTS` / `HYDE_TIMEOUT_SEC` — opt-in retrieval expansion.
+- `CHAT_COREFERENCE_REWRITE` — resolves "it"/"that" follow-ups into a standalone search query using recent history.
+- `ANSWER_VERIFIER_ENABLED` / `ANSWER_VERIFIER_MIN_SCORE` — second LLM pass that scores groundedness; regenerates once when weak. Streaming endpoints skip the verifier.
+
 ### Open PDF source behaviour
 
 - Source links resolve via `/pdfs/by-id/{document_id}` against the configured PDF storage backend.
@@ -230,6 +277,31 @@ The script recreates the collection with named `dense` and `sparse` vector confi
 ### BM25 sparse index
 
 `BM25SparseEncoder.save` writes `bm25.json` under `SPARSE_INDEX_DIR` after each ingest run. Query-time encoding loads the same snapshot via `BM25SparseEncoder.load_or_default`. If the file is missing, the encoder falls back to a deterministic default and the system emits a warning log line.
+
+### Lightweight in-place migrations
+
+`app.db.relational.init_db()` runs on startup and, after `metadata.create_all`, executes an idempotent migration helper (`_apply_lightweight_migrations`) that adds the following columns when an older schema is encountered:
+
+| Table | Columns |
+| --- | --- |
+| `documents` | `summary` (TEXT), `tags` (TEXT/JSON), `version` (INTEGER) |
+| `chat_sessions` | `title` (TEXT), `parent_session_id` (TEXT), `parent_turn_id` (TEXT) |
+
+This keeps deploys against pre-existing databases zero-downtime — newer columns simply appear the first time a newer build boots. Schema-level changes that rename, drop, or re-type columns still go through dedicated `scripts/migrate_*.py` scripts.
+
+### Document versioning
+
+Document versioning hinges on the *user-facing* filename. The `/ingest` route stores uploads at `/tmp/{task_id}_{filename}` for cleanup safety, so the ingestion pipeline accepts an explicit `original_filename` argument and uses it for both:
+
+1. The relational `_next_document_version(filename)` lookup (so re-uploads always increment instead of forking a new lineage).
+2. The canonical `pdf_name` written into every chunk's vector payload (so citation labels never expose the temp prefix).
+
+If you ingest programmatically via `IngestPipeline.run`, pass `original_filename="my_file.pdf"` whenever the path on disk differs from what the user uploaded.
+
+### Operator endpoints (CLI + SDKs)
+
+- **Admin CLI** — `python -m app.cli {ingest,query,clear-cache,export-corpus,eval}` covers ingest, retrieval, cache invalidation, corpus export to JSONL, and golden-set evaluation. Each subcommand imports lazily so cold-start cost matches the workload.
+- **SDK generation** — `python -m scripts.gen_sdk` (or `--url http://localhost:8000/openapi.json`) regenerates a Python (`app/sdk/python`) and TypeScript (`helpdesk-ui/src/lib/sdk`) client from the live OpenAPI schema. Both clients are checked into the repo and round-tripped through CI.
 
 ---
 

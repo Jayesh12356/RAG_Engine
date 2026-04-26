@@ -1,6 +1,7 @@
 "use client"
 
-import { motion } from "framer-motion"
+import * as React from "react"
+import { motion, AnimatePresence } from "framer-motion"
 import { cn } from "@/lib/utils"
 
 export interface ConfidenceGaugeProps {
@@ -10,6 +11,9 @@ export interface ConfidenceGaugeProps {
   strokeWidth?: number
   className?: string
   refused?: boolean
+  costUsd?: number
+  latencyMs?: number
+  numSources?: number
 }
 
 export function ConfidenceGauge({
@@ -19,7 +23,23 @@ export function ConfidenceGauge({
   strokeWidth = 8,
   className,
   refused = false,
+  costUsd,
+  latencyMs,
+  numSources,
 }: ConfidenceGaugeProps) {
+  const [popoverOpen, setPopoverOpen] = React.useState(false)
+  const closeTimer = React.useRef<number | null>(null)
+  const open = () => {
+    if (closeTimer.current) {
+      window.clearTimeout(closeTimer.current)
+      closeTimer.current = null
+    }
+    setPopoverOpen(true)
+  }
+  const closeSoon = () => {
+    if (closeTimer.current) window.clearTimeout(closeTimer.current)
+    closeTimer.current = window.setTimeout(() => setPopoverOpen(false), 150)
+  }
   const clamped = Math.max(0, Math.min(1, value))
   const radius = (size - strokeWidth) / 2
   const circumference = 2 * Math.PI * radius
@@ -43,6 +63,9 @@ export function ConfidenceGauge({
 
   const labelText = label ?? (refused ? "Refused" : tone === "primary" ? "High" : tone === "warning" ? "Moderate" : "Low")
 
+  const hasDetails =
+    typeof costUsd === "number" || typeof latencyMs === "number" || typeof numSources === "number"
+
   return (
     <div
       className={cn("relative inline-flex flex-col items-center justify-center", className)}
@@ -52,6 +75,11 @@ export function ConfidenceGauge({
       aria-valuemax={100}
       aria-valuenow={pct}
       aria-label={`Confidence ${pct}% — ${labelText}`}
+      onMouseEnter={hasDetails ? open : undefined}
+      onMouseLeave={hasDetails ? closeSoon : undefined}
+      onFocus={hasDetails ? open : undefined}
+      onBlur={hasDetails ? closeSoon : undefined}
+      tabIndex={hasDetails ? 0 : -1}
     >
       <svg width={size} height={size} className="-rotate-90">
         <defs>
@@ -88,6 +116,41 @@ export function ConfidenceGauge({
           {labelText}
         </span>
       </div>
+      <AnimatePresence>
+        {popoverOpen && hasDetails && (
+          <motion.div
+            initial={{ opacity: 0, y: 4, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 4, scale: 0.98 }}
+            transition={{ duration: 0.14 }}
+            className="pointer-events-none absolute left-1/2 top-full z-30 mt-2 w-56 -translate-x-1/2 rounded-md border border-border bg-card/95 p-3 text-left text-xs text-muted-fg shadow-card backdrop-blur"
+          >
+            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-fg">
+              Answer telemetry
+            </p>
+            <ul className="mt-2 space-y-1">
+              {typeof costUsd === "number" && (
+                <li className="flex justify-between gap-3">
+                  <span>Estimated cost</span>
+                  <span className="font-mono text-fg">${costUsd.toFixed(4)}</span>
+                </li>
+              )}
+              {typeof latencyMs === "number" && latencyMs > 0 && (
+                <li className="flex justify-between gap-3">
+                  <span>End-to-end latency</span>
+                  <span className="font-mono text-fg">{Math.round(latencyMs)} ms</span>
+                </li>
+              )}
+              {typeof numSources === "number" && (
+                <li className="flex justify-between gap-3">
+                  <span>Sources cited</span>
+                  <span className="font-mono text-fg">{numSources}</span>
+                </li>
+              )}
+            </ul>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }

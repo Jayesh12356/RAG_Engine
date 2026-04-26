@@ -1,0 +1,40 @@
+{
+  "name": "RAG Engine",
+  "short_name": "RAG Engine",
+  "description": "Premium document Q&A — grounded answers with citations across every document.",
+  "start_url": "/app",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0a0d14",
+  "theme_color": "#0a0d14",
+  "categories": ["productivity", "business", "utilities"],
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Ask",
+      "short_name": "Ask",
+      "url": "/app/query",
+      "description": "Single-shot Q&A"
+    },
+    {
+      "name": "Chat",
+      "short_name": "Chat",
+      "url": "/app/chat",
+      "description": "Conversational research"
+    },
+    {
+      "name": "Documents",
+      "short_name": "Library",
+      "url": "/app/documents",
+      "description": "Manage your corpus"
+    }
+  ]
+}

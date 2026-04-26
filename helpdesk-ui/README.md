@@ -14,11 +14,25 @@ Next.js 14 (App Router) frontend for the [RAG Engine](../README.md) document Q&A
 | `/sign-in`, `/sign-up` | Cookie-based auth shell (lightweight; `rag_engine_uid` cookie gates `/app/*`). |
 | `/app` | Authenticated entry; redirects into the in-app shell. |
 | `/app/query` | One-shot grounded answers with citations and confidence. |
-| `/app/chat` | Multi-turn conversation with sessions rail, slash commands and streaming. |
-| `/app/documents` | Library: upload, inspect chunks, delete; supports every format the backend accepts. |
-| `/app/status` | Live health tiles: provider, vector DB, relational DB, latency. |
+| `/app/chat` | Multi-turn conversation with sessions rail, slash commands, branching, and streaming. |
+| `/app/documents` | Library: upload, inspect chunks, delete, edit tags / Spaces; supports every format the backend accepts. Even-height cards display the cleaned filename and a copyable short document ID. |
+| `/app/status` | Live health tiles + recent metrics graphs (Recharts) + recent log stream. |
+| `/app/settings` | Declarative preferences panel rendered from `GET /settings/schema`; persists per-cookie via `/preferences`. |
 
 A simple cookie-based middleware ([`src/middleware.ts`](src/middleware.ts)) redirects unauthenticated visitors from `/app/*` to `/sign-in`.
+
+### Rate-limit toast contract
+
+`/query` and `/chat` responses with HTTP 429 are parsed into a `RateLimitError` (see [`src/lib/api.ts`](src/lib/api.ts)) that exposes `retryAfterSeconds` and `scope` (`ip` or `cookie`). The query and chat pages translate that into a Sonner toast such as *"Too many requests. Please slow down. — Try again in 49s."* — there is no fallback to retry-on-429 because the contract is deliberately user-visible.
+
+### Document card
+
+[`src/components/documents/doc-card.tsx`](src/components/documents/doc-card.tsx) and the documents grid use Tailwind's `auto-rows-fr` + a card-level `h-full` so every card in a row has the same height regardless of whether it carries a tag pill or a `v2` chip. The card prominently shows:
+
+1. The **clean filename** (`stripUuidPrefix` removes any `task_id_` prefix that older uploads may carry, while preserving the extension).
+2. The **short document ID** (`abcdef12…3456`) with a copy button — clicking it puts the full UUID on the clipboard and surfaces a confirmation toast.
+
+Both helpers (`cleanFilename`, `shortId`) live in [`src/lib/utils.ts`](src/lib/utils.ts) and are reusable across surfaces (e.g. citation tooltips).
 
 ---
 
@@ -80,24 +94,27 @@ src/
       chat/page.tsx
       documents/page.tsx
       status/page.tsx
+      settings/page.tsx        # Declarative settings rendered from /settings/schema
     layout.tsx, globals.css
     favicon.ico, opengraph-image.tsx
   components/
-    answer/                    # MarkdownAnswer, CodeBlock, ChartBlock, SourceLink, ConfidenceGauge
+    answer/                    # MarkdownAnswer, CodeBlock, ChartBlock, SourceLink, ConfidenceGauge, AnswerToolbar
     app/                       # Sidebar, Topbar, MobileNav, CommandDialog, OnboardingTour, UserMenu
     auth/                      # AuthShell, sign-in/up forms
-    chat/                      # Composer, MessageBubble, SessionsRail, ConfidenceGauge, slash menu
-    documents/                 # UploadZone, DocCard, InspectSheet
+    chat/                      # Composer, MessageBubble, SessionsRail, ConfidenceGauge, slash menu, branch dialog
+    documents/                 # UploadZone, DocCard (clean filename + short id), InspectSheet, TagEditor, SpacesSidebar
     landing/                   # Hero, Features, ProvidersMarquee, DemoCard, Testimonial, Footer
     query/                     # One-shot query surface helpers
-    status/                    # StatusTile
+    status/                    # StatusTile, MetricsGraphs, LogsStream
+    settings/                  # Declarative form renderer for /settings/schema
     ui/                        # Primitives: Button, Card, Dialog, Dropdown, Input, Switch, Tooltip, Kbd, ...
     motion/                    # Reusable motion variants
     theme-provider.tsx
   lib/
     auth.ts                    # Cookie-based session + useSession hook
-    api.ts                     # Backend client (fetch + SSE)
-    motion.ts, utils.ts        # Helpers (cn, uid, formatRelativeTime, ...)
+    api.ts                     # Backend client (fetch + SSE) + RateLimitError
+    motion.ts, utils.ts        # Helpers (cn, uid, formatRelativeTime, cleanFilename, shortId, ...)
+    sdk/                       # Auto-generated TS SDK (regenerate with python -m scripts.gen_sdk)
   middleware.ts                # /app/* auth gate
   types/index.ts               # Shared TS types
 ```

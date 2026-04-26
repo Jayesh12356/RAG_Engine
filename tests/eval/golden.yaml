@@ -1,0 +1,48 @@
+# Golden RAG evaluation set.
+#
+# Each entry is consumed by ``scripts/run_eval.py`` and exercises the
+# live ``QueryPipeline`` end-to-end. Add new questions per category;
+# the harness aggregates per-category and overall scores so you can see
+# where regressions land. Keys:
+#
+#   id              - stable identifier (used for diffs & dashboards).
+#   category        - service category to pin (or ``GENERAL`` if open).
+#   question        - the user prompt as the pipeline would see it.
+#   expected_keywords  - phrases that must occur in the answer for
+#                        ``faithfulness`` to count as a hit.
+#   expected_sources   - one or more document filenames or chunk-id
+#                        prefixes that must appear in the citations
+#                        for ``citation_precision`` to count as a hit.
+#                        Substring match is used.
+#   expected_refusal   - true if the question is intentionally outside
+#                        the corpus and the pipeline SHOULD refuse.
+#
+# Notes:
+# * Keep this file small (≤ 20 entries). Eval is gated by RUN_EVAL=1.
+# * The harness tolerates partial overlap; keywords are matched
+#   case-insensitively after whitespace collapsing.
+# * Refusal questions intentionally have no expected_keywords or
+#   expected_sources.
+
+cases:
+  - id: vpn-password-reset
+    category: VPN
+    question: "How do I reset my VPN password?"
+    expected_keywords:
+      - "VPN"
+      - "password"
+    expected_sources:
+      - "VPN_Setup_Guide"
+
+  - id: vpn-two-factor
+    category: VPN
+    question: "What two-factor authentication method does the VPN use?"
+    expected_keywords:
+      - "Duo"
+    expected_sources:
+      - "VPN_Setup_Guide"
+
+  - id: general-corpus-out-of-scope
+    category: GENERAL
+    question: "When did Alexander the Great die?"
+    expected_refusal: true

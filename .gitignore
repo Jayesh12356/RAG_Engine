@@ -45,3 +45,9 @@ image_pdfs/
 # Local-only debug helpers — keep on disk, never commit
 scripts/_*.py
 
+# Smoke-test / scratch artefacts produced by app.cli, /ingest, etc.
+tmp/
+data/smoke-*
+data/*-fixture.*
+helpdesk-ui/data/
+

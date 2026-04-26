@@ -7,6 +7,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
+from app.observability import install_structlog_capture
+from app.observability.tracing import setup_tracing
 
 logger = structlog.get_logger()
 
@@ -45,8 +47,12 @@ def create_app() -> FastAPI:
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     settings = get_settings()
-        
+
+    install_structlog_capture()
+
     app = FastAPI(title="IT-HELPDESK-RAG", version="0.1.0", lifespan=lifespan)
+
+    setup_tracing(app)
 
     app.add_middleware(
         CORSMiddleware,
@@ -55,6 +61,10 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    from app.api.middleware import UserPreferenceOverrideMiddleware
+
+    app.add_middleware(UserPreferenceOverrideMiddleware)
 
     from app.api.routes import router as api_router
     app.include_router(api_router)

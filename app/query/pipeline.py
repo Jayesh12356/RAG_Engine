@@ -24,8 +24,12 @@ import uuid
 import structlog
 
 from app.config import get_settings
+from app.db.relational import record_pipeline_metric
 from app.llm import client as llm_client
 from app.llm.image_client import post_process_answer as _post_process_images
+from app.observability.cost import estimate_cost_usd
+from app.observability.tracing import stage_span
+from app.observability.webhooks import fire_and_forget as fire_webhook
 from app.models.query import (
     Citation,
     QueryRequest,
@@ -33,7 +37,9 @@ from app.models.query import (
     SearchResult,
     SourceChunk,
 )
+from app.query.cache import get_answer_cache, make_cache_key
 from app.query.diversify import diversify
+from app.query.expand import expanded_search
 from app.query.gates import confidence_label as confidence_label_fn
 from app.query.gates import evidence_gate
 from app.query.hybrid_search import HybridSearch
@@ -50,9 +56,23 @@ from app.query.rag_generator import (
 from app.query.reranker import CohereReranker
 from app.query.rewrite import maybe_rewrite_query
 from app.query.router import QueryRouter
+from app.query.verifier import verify_groundedness
 
 logger = structlog.get_logger(__name__)
 settings = get_settings()
+
+
+def _active_model_name(s) -> str:
+    """Return the model id of the active LLM provider.
+
+    The cost estimator uses this to look up per-1K input/output prices.
+    """
+    provider = getattr(s, "LLM_PROVIDER", "")
+    if provider == "groq":
+        return getattr(s, "GROQ_MODEL", "") or ""
+    if provider == "openrouter":
+        return getattr(s, "OPENROUTER_MODEL", "") or ""
+    return getattr(s, "OPENAI_MODEL", "") or ""
 REFUSAL = REFUSAL_PHRASE
 
 
@@ -251,7 +271,32 @@ class QueryPipeline:
         request: QueryRequest,
         confidence: float,
         service_category: str,
+        *,
+        latency_ms: float = 0.0,
     ) -> QueryResponse:
+        # Schedule metrics recording on the running loop so we don't block
+        # the refusal path. Failures are swallowed inside the helper.
+        try:
+            asyncio.create_task(
+                record_pipeline_metric(
+                    latency_ms=latency_ms,
+                    refused=True,
+                    confidence=confidence,
+                    cost_usd=0.0,
+                )
+            )
+        except RuntimeError:
+            # No running loop (sync test path) — drop the metric silently.
+            pass
+        fire_webhook(
+            "query.refused",
+            {
+                "question": request.question,
+                "service_category": service_category or "GENERAL",
+                "confidence": confidence,
+                "latency_ms": round(latency_ms, 2),
+            },
+        )
         return QueryResponse(
             question=request.question,
             answer=REFUSAL_PHRASE,
@@ -262,40 +307,80 @@ class QueryPipeline:
             service_category=service_category or "GENERAL",
             refused=True,
             visual_capable=settings.llm_is_visual_capable,
+            cost_usd=0.0,
+            latency_ms=round(latency_ms, 2),
         )
 
     # ------------------------------------------------------------------ run
     async def run(self, request: QueryRequest) -> QueryResponse:
+        # Re-bind so per-cookie overrides set by the middleware win over the
+        # module-level singleton imported at startup.
+        settings = get_settings()
         request_id = str(uuid.uuid4())
         start_time = time.time()
         logger.info("pipeline_start", request_id=request_id, question=request.question)
 
+        cache = get_answer_cache()
+        cache_key: str | None = None
+        if cache is not None:
+            cache_key = make_cache_key(
+                question=request.question,
+                top_k=request.top_k or settings.MAX_CHUNKS_RETURN,
+                service_category=request.service_category,
+                rerank_top_n=request.rerank_top_n,
+                include_citations=request.include_citations,
+            )
+            cached = await cache.get(cache_key)
+            if cached is not None:
+                logger.info(
+                    "pipeline_cache_hit",
+                    request_id=request_id,
+                    elapsed_sec=round(time.time() - start_time, 3),
+                )
+                return cached
+
         try:
             top_k = request.top_k or settings.MAX_CHUNKS_RETURN
-            router_task = self.router.detect(request.question)
-            search_task = self.searcher.search(
-                request.question, request.service_category, top_k
-            )
-            router_result, initial_search = await asyncio.gather(router_task, search_task)
+            with stage_span(
+                "query.retrieve",
+                top_k=top_k,
+                tags=",".join(request.tags or ()),
+            ):
+                router_task = self.router.detect(request.question)
+                search_task = expanded_search(
+                    self.searcher,
+                    request.question,
+                    request.service_category,
+                    top_k,
+                    tags=request.tags or None,
+                )
+                router_result, initial_search = await asyncio.gather(router_task, search_task)
             service_category = request.service_category or router_result.service_category
 
             if not initial_search:
                 return self._refusal_response(request, 0.0, service_category)
 
             top_score = initial_search[0].score
-            rewritten = await maybe_rewrite_query(request.question, top_score)
+            with stage_span("query.rewrite", top_score=float(top_score)):
+                rewritten = await maybe_rewrite_query(request.question, top_score)
             search_question = rewritten if rewritten != request.question else request.question
             if rewritten != request.question:
                 tuned_top_k = _adjust_top_k(top_k, router_result.intent)
-                initial_search = await self.searcher.search(
-                    search_question, request.service_category, tuned_top_k
-                )
+                with stage_span("query.research", top_k=tuned_top_k):
+                    initial_search = await self.searcher.search(
+                        search_question,
+                        request.service_category,
+                        tuned_top_k,
+                        tags=request.tags or None,
+                    )
                 if not initial_search:
                     return self._refusal_response(request, 0.0, service_category)
 
             top_n = max(request.rerank_top_n or settings.RERANK_TOP_N, 5)
-            reranked_chunks = await self.reranker.rerank(search_question, initial_search, top_n)
-            unique_chunks = diversify(reranked_chunks, top_k=top_n)
+            with stage_span("query.rerank", top_n=top_n, candidates=len(initial_search)):
+                reranked_chunks = await self.reranker.rerank(search_question, initial_search, top_n)
+            with stage_span("query.diversify", top_n=top_n):
+                unique_chunks = diversify(reranked_chunks, top_k=top_n)
             unique_chunks = _ensure_section_anchor(
                 request.question, unique_chunks, initial_search
             )
@@ -327,9 +412,44 @@ class QueryPipeline:
                 second=verdict.second_score,
             )
 
-            generation = await self.generator.generate(
-                request.question, unique_chunks, service_category
-            )
+            with stage_span("query.generate", chunks=len(unique_chunks)):
+                generation = await self.generator.generate(
+                    request.question, unique_chunks, service_category
+                )
+
+            # Optional groundedness verifier — regenerate once, then refuse.
+            if settings.ANSWER_VERIFIER_ENABLED:
+                with stage_span("query.verify"):
+                    passed, score, reason = await verify_groundedness(
+                        request.question, generation.answer, unique_chunks
+                    )
+                if not passed:
+                    logger.info(
+                        "pipeline_verifier_regenerate",
+                        request_id=request_id,
+                        score=score,
+                        reason=reason,
+                    )
+                    with stage_span("query.regenerate"):
+                        regen = await self.generator.generate(
+                            request.question, unique_chunks, service_category
+                        )
+                    passed2, score2, reason2 = await verify_groundedness(
+                        request.question, regen.answer, unique_chunks
+                    )
+                    if passed2:
+                        generation = regen
+                    else:
+                        logger.warning(
+                            "pipeline_verifier_refused",
+                            request_id=request_id,
+                            score_first=score,
+                            score_regen=score2,
+                            reason=reason2,
+                        )
+                        return self._refusal_response(
+                            request, score2, service_category
+                        )
 
             if generation.confidence < settings.CONFIDENCE_THRESHOLD:
                 logger.warning(
@@ -358,7 +478,13 @@ class QueryPipeline:
                 num_sources=len(sources),
                 confidence=generation.confidence,
             )
-            return QueryResponse(
+
+            cost = estimate_cost_usd(
+                prompt_text=request.question,
+                answer_text=generation.answer,
+                model=_active_model_name(settings),
+            )
+            response = QueryResponse(
                 question=request.question,
                 answer=generation.answer,
                 confidence=generation.confidence,
@@ -368,7 +494,30 @@ class QueryPipeline:
                 service_category=service_category,
                 refused=False,
                 visual_capable=settings.llm_is_visual_capable,
+                cost_usd=cost,
+                latency_ms=round(elapsed * 1000.0, 2),
             )
+            await record_pipeline_metric(
+                latency_ms=elapsed * 1000.0,
+                refused=False,
+                confidence=generation.confidence,
+                cost_usd=cost,
+            )
+            fire_webhook(
+                "query.completed",
+                {
+                    "question": request.question,
+                    "answer": generation.answer,
+                    "service_category": service_category,
+                    "confidence": generation.confidence,
+                    "latency_ms": round(elapsed * 1000.0, 2),
+                    "cost_usd": cost,
+                    "num_sources": len(sources),
+                },
+            )
+            if cache is not None and cache_key and not response.refused:
+                await cache.set(cache_key, response)
+            return response
 
         except Exception as exc:
             logger.error(
@@ -381,13 +530,20 @@ class QueryPipeline:
 
     # ------------------------------------------------------------------ stream
     async def run_stream(self, request: QueryRequest):
+        # Pull a fresh settings snapshot so the active rag_engine_uid override
+        # (HYDE_ENABLED, MAX_CHUNKS_RETURN, …) reaches the streaming path too.
+        settings = get_settings()
         request_id = str(uuid.uuid4())
         service_category = request.service_category or "GENERAL"
         try:
             top_k = request.top_k or settings.MAX_CHUNKS_RETURN
             router_task = self.router.detect(request.question)
-            search_task = self.searcher.search(
-                request.question, request.service_category, top_k
+            search_task = expanded_search(
+                self.searcher,
+                request.question,
+                request.service_category,
+                top_k,
+                tags=request.tags or None,
             )
             router_result, initial_search = await asyncio.gather(router_task, search_task)
             service_category = request.service_category or router_result.service_category
@@ -403,7 +559,10 @@ class QueryPipeline:
             if rewritten != request.question:
                 tuned_top_k = _adjust_top_k(top_k, router_result.intent)
                 initial_search = await self.searcher.search(
-                    search_question, request.service_category, tuned_top_k
+                    search_question,
+                    request.service_category,
+                    tuned_top_k,
+                    tags=request.tags or None,
                 )
                 if not initial_search:
                     payload = self._refusal_response(request, 0.0, service_category)
@@ -434,6 +593,25 @@ class QueryPipeline:
                 if request.include_citations is not None
                 else settings.INCLUDE_CITATIONS_DEFAULT
             )
+
+            # Pre-emit citations so the UI can render the source rail and
+            # span popovers as soon as we know what we're streaming from.
+            pre_citations = (
+                build_citations(unique_chunks, question=request.question)
+                if include_citations
+                else []
+            )
+            if pre_citations:
+                yield (
+                    "data: "
+                    + json.dumps(
+                        {
+                            "type": "citations",
+                            "items": [c.model_dump() for c in pre_citations],
+                        }
+                    )
+                    + "\n\n"
+                )
 
             user_prompt = build_user_prompt(request.question, unique_chunks)
             system_prompt = build_system_prompt(service_category)
@@ -469,7 +647,9 @@ class QueryPipeline:
                 payload = self._refusal_response(request, confidence, service_category)
             else:
                 citations: list[Citation] = (
-                    build_citations(unique_chunks) if include_citations else []
+                    build_citations(unique_chunks, question=request.question)
+                    if include_citations
+                    else []
                 )
                 payload = QueryResponse(
                     question=request.question,

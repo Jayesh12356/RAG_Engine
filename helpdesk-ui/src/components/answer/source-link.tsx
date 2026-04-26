@@ -5,6 +5,7 @@ import { motion } from "framer-motion"
 import { ExternalLink, FileText } from "lucide-react"
 import { cleanPdfName, cn } from "@/lib/utils"
 import type { SourceChunk } from "@/types"
+import { sourceToTarget, useSourceViewer } from "./source-viewer"
 
 export interface SourceLinkProps {
   sources: SourceChunk[] | null | undefined
@@ -17,17 +18,22 @@ function pickTop(sources: SourceChunk[] | null | undefined): SourceChunk | null 
 }
 
 export function SourceLink({ sources, className }: SourceLinkProps) {
+  const sourceViewer = useSourceViewer()
   const top = React.useMemo(() => pickTop(sources), [sources])
-  if (!top || !top.pdf_url) return null
+  if (!top) return null
 
   const fileLabel = cleanPdfName(top.pdf_name)
   const pageHint = top.page_number ? `p.${top.page_number}` : null
 
+  const handleClick = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    sourceViewer.open(sourceToTarget(top))
+  }
+
   return (
-    <motion.a
-      href={top.pdf_url}
-      target="_blank"
-      rel="noreferrer"
+    <motion.button
+      type="button"
+      onClick={handleClick}
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
@@ -54,6 +60,6 @@ export function SourceLink({ sources, className }: SourceLinkProps) {
         </span>
       </span>
       <ExternalLink className="h-3.5 w-3.5 shrink-0 text-muted-fg transition-all duration-200 group-hover:translate-x-0.5 group-hover:text-primary" />
-    </motion.a>
+    </motion.button>
   )
 }

@@ -10,6 +10,12 @@ export const metadata: Metadata = {
   description:
     "A premium document Q&A engine that turns any document — PDF, Word, Excel/CSV, PowerPoint, text, JSON or image — into grounded, cited answers.",
   applicationName: "RAG Engine",
+  manifest: "/manifest.webmanifest",
+  appleWebApp: {
+    capable: true,
+    title: "RAG Engine",
+    statusBarStyle: "black-translucent",
+  },
 }
 
 export const viewport: Viewport = {
@@ -17,6 +23,9 @@ export const viewport: Viewport = {
     { media: "(prefers-color-scheme: light)", color: "#ffffff" },
     { media: "(prefers-color-scheme: dark)", color: "#0a0d14" },
   ],
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
 }
 
 export default function RootLayout({

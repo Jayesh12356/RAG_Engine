@@ -8,14 +8,18 @@ import { UploadZone } from "@/components/documents/upload-zone"
 import { DocCard } from "@/components/documents/doc-card"
 import { InspectSheet } from "@/components/documents/inspect-sheet"
 import { DeleteDocumentDialog } from "@/components/documents/delete-dialog"
+import { TagEditor } from "@/components/documents/tag-editor"
+import { SpacesSidebar } from "@/components/documents/spaces-sidebar"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Badge } from "@/components/ui/badge"
-import { deleteDocument, getDocuments } from "@/lib/api"
+import { deleteDocument, getDocuments, getTags, setDocumentTags } from "@/lib/api"
 import type { DocumentListItem } from "@/types"
 import { Stagger, StaggerItem } from "@/components/motion/stagger"
 
 export default function DocumentsPage() {
   const [docs, setDocs] = React.useState<DocumentListItem[]>([])
+  const [tags, setTags] = React.useState<string[]>([])
+  const [activeTag, setActiveTag] = React.useState<string | null>(null)
   const [loading, setLoading] = React.useState(true)
   const [search, setSearch] = React.useState("")
   const [inspectDoc, setInspectDoc] = React.useState<DocumentListItem | null>(null)
@@ -23,12 +27,15 @@ export default function DocumentsPage() {
   const [deleteDoc, setDeleteDoc] = React.useState<DocumentListItem | null>(null)
   const [deleteOpen, setDeleteOpen] = React.useState(false)
   const [deleting, setDeleting] = React.useState(false)
+  const [tagDoc, setTagDoc] = React.useState<DocumentListItem | null>(null)
+  const [tagOpen, setTagOpen] = React.useState(false)
 
   const refresh = React.useCallback(async () => {
     setLoading(true)
     try {
-      const res = await getDocuments()
-      setDocs(res.documents ?? [])
+      const [docsRes, tagsRes] = await Promise.all([getDocuments(), getTags()])
+      setDocs(docsRes.documents ?? [])
+      setTags(tagsRes.tags ?? [])
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to load documents"
       toast.error(message)
@@ -43,13 +50,49 @@ export default function DocumentsPage() {
 
   const filtered = React.useMemo(() => {
     const q = search.toLowerCase().trim()
-    if (!q) return docs
-    return docs.filter(
-      (d) =>
+    const lowerTag = activeTag?.toLowerCase() ?? null
+    return docs.filter((d) => {
+      if (lowerTag && !(d.tags ?? []).some((t) => t.toLowerCase() === lowerTag)) return false
+      if (!q) return true
+      return (
         d.pdf_name.toLowerCase().includes(q) ||
-        d.service_name?.toLowerCase().includes(q),
+        d.service_name?.toLowerCase().includes(q) ||
+        (d.tags ?? []).some((t) => t.toLowerCase().includes(q))
+      )
+    })
+  }, [docs, search, activeTag])
+
+  const updateLocalTags = React.useCallback((documentId: string, nextTags: string[]) => {
+    setDocs((prev) =>
+      prev.map((doc) => (doc.document_id === documentId ? { ...doc, tags: nextTags } : doc)),
     )
-  }, [docs, search])
+    setTags((prev) => {
+      const merged = new Set(prev)
+      nextTags.forEach((t) => merged.add(t))
+      return Array.from(merged)
+    })
+  }, [])
+
+  const handleDropTag = React.useCallback(
+    async (tag: string, documentId: string) => {
+      const target = docs.find((d) => d.document_id === documentId)
+      if (!target) return
+      const existing = target.tags ?? []
+      if (existing.some((t) => t.toLowerCase() === tag.toLowerCase())) {
+        toast.message(`${target.pdf_name} is already in #${tag}`)
+        return
+      }
+      try {
+        const next = [...existing, tag]
+        const res = await setDocumentTags(documentId, next)
+        updateLocalTags(documentId, res.tags)
+        toast.success(`Added to #${tag}`)
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Could not assign tag")
+      }
+    },
+    [docs, updateLocalTags],
+  )
 
   const handleConfirmDelete = async () => {
     if (!deleteDoc) return
@@ -113,46 +156,68 @@ export default function DocumentsPage() {
           </div>
         </div>
 
-        {loading ? (
-          <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {Array.from({ length: 6 }).map((_, i) => (
-              <Skeleton key={i} className="h-[140px] w-full rounded-2xl" />
-            ))}
+        <div className="mt-5 flex flex-col gap-5 lg:flex-row">
+          <SpacesSidebar
+            tags={tags}
+            selected={activeTag}
+            onSelect={setActiveTag}
+            onDropTag={handleDropTag}
+            className="lg:sticky lg:top-4 lg:self-start"
+          />
+
+          <div className="min-w-0 flex-1">
+            {loading ? (
+              <div className="grid auto-rows-fr gap-3 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3">
+                {Array.from({ length: 6 }).map((_, i) => (
+                  <Skeleton key={i} className="h-[176px] w-full rounded-2xl" />
+                ))}
+              </div>
+            ) : filtered.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-border bg-card/40 p-12 text-center">
+                <FilesIcon className="mx-auto mb-2 h-6 w-6 text-muted-fg" />
+                <p className="font-medium text-fg">
+                  {docs.length === 0
+                    ? "No documents yet"
+                    : activeTag
+                    ? `No documents in #${activeTag}`
+                    : "No matches"}
+                </p>
+                <p className="mt-1 text-xs text-muted-fg">
+                  {docs.length === 0
+                    ? "Upload your first document above to get started."
+                    : activeTag
+                    ? "Drag a card onto this Space, or assign tags from a card menu."
+                    : "Try a different search term."}
+                </p>
+              </div>
+            ) : (
+              <Stagger
+                once={false}
+                className="grid auto-rows-fr gap-3 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3"
+              >
+                {filtered.map((doc) => (
+                  <StaggerItem key={doc.document_id} className="h-full">
+                    <DocCard
+                      doc={doc}
+                      onInspect={(d) => {
+                        setInspectDoc(d)
+                        setInspectOpen(true)
+                      }}
+                      onDelete={(d) => {
+                        setDeleteDoc(d)
+                        setDeleteOpen(true)
+                      }}
+                      onEditTags={(d) => {
+                        setTagDoc(d)
+                        setTagOpen(true)
+                      }}
+                    />
+                  </StaggerItem>
+                ))}
+              </Stagger>
+            )}
           </div>
-        ) : filtered.length === 0 ? (
-          <div className="mt-5 rounded-2xl border border-dashed border-border bg-card/40 p-12 text-center">
-            <FilesIcon className="mx-auto mb-2 h-6 w-6 text-muted-fg" />
-            <p className="font-medium text-fg">
-              {docs.length === 0 ? "No documents yet" : "No matches"}
-            </p>
-            <p className="mt-1 text-xs text-muted-fg">
-              {docs.length === 0
-                ? "Upload your first document above to get started."
-                : "Try a different search term."}
-            </p>
-          </div>
-        ) : (
-          <Stagger
-            once={false}
-            className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3"
-          >
-            {filtered.map((doc) => (
-              <StaggerItem key={doc.document_id}>
-                <DocCard
-                  doc={doc}
-                  onInspect={(d) => {
-                    setInspectDoc(d)
-                    setInspectOpen(true)
-                  }}
-                  onDelete={(d) => {
-                    setDeleteDoc(d)
-                    setDeleteOpen(true)
-                  }}
-                />
-              </StaggerItem>
-            ))}
-          </Stagger>
-        )}
+        </div>
       </div>
 
       <InspectSheet open={inspectOpen} onOpenChange={setInspectOpen} document={inspectDoc} />
@@ -162,6 +227,13 @@ export default function DocumentsPage() {
         doc={deleteDoc}
         onConfirm={handleConfirmDelete}
         busy={deleting}
+      />
+      <TagEditor
+        open={tagOpen}
+        onOpenChange={setTagOpen}
+        doc={tagDoc}
+        knownTags={tags}
+        onSaved={(saved, nextTags) => updateLocalTags(saved.document_id, nextTags)}
       />
     </div>
   )

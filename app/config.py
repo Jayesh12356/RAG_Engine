@@ -1,6 +1,7 @@
 import re
+from contextvars import ContextVar
 from functools import lru_cache
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -84,6 +85,13 @@ class Settings(BaseSettings):
     # ── Re-ranking ────────────────────────────────────────────────────────
     COHERE_RERANK_MODEL: str = "rerank-english-v3.0"
 
+    # ── Local cross-encoder rerank fallback ───────────────────────────────
+    # When Cohere is unreachable, optionally rescore with a local
+    # ``sentence-transformers`` cross-encoder. Default OFF and lazy-loaded
+    # so the package stays usable without the heavy ML deps.
+    LOCAL_RERANKER_ENABLED: bool = False
+    LOCAL_RERANKER_MODEL: str = "BAAI/bge-reranker-base"
+
     # ── App ───────────────────────────────────────────────────────────────
     DEMO_MODE: bool = False
     LOG_LEVEL: str = "INFO"
@@ -123,6 +131,47 @@ class Settings(BaseSettings):
     # ── Query rewriting ───────────────────────────────────────────────────
     QUERY_REWRITE_ENABLED: bool = False
     QUERY_REWRITE_TRIGGER_SCORE: float = 0.40
+
+    # ── Retrieval expansion (HyDE + multi-query) ──────────────────────────
+    # Both default OFF so existing deployments keep their latency profile.
+    # When enabled, the pipeline runs an extra LLM expansion call concurrent
+    # with retrieval and fuses the variants with RRF (HYBRID_RRF_K).
+    HYDE_ENABLED: bool = False
+    MULTI_QUERY_ENABLED: bool = False
+    MULTI_QUERY_VARIANTS: int = 3
+    HYDE_TIMEOUT_SEC: float = 6.0
+
+    # ── Chat: conversational coreference rewrite ──────────────────────────
+    # When enabled, follow-up questions like "why?" or "tell me more about it"
+    # are rewritten into self-contained queries using the recent history,
+    # then sent to retrieval. Default OFF (one extra LLM call per follow-up).
+    CHAT_COREFERENCE_REWRITE: bool = False
+
+    # ── Groundedness verifier ─────────────────────────────────────────────
+    # An opt-in second LLM pass that scores how well an answer is supported
+    # by retrieved context. Below ``ANSWER_VERIFIER_MIN_SCORE`` we regenerate
+    # once and refuse if the regeneration is also weak. Adds latency.
+    ANSWER_VERIFIER_ENABLED: bool = False
+    ANSWER_VERIFIER_MIN_SCORE: float = 0.55
+
+    # ── Answer cache ──────────────────────────────────────────────────────
+    # Process-local LRU cache that returns prior answers for identical
+    # ``(question, top_k, service_category)`` requests at the current
+    # corpus version. Set ``ANSWER_CACHE_BACKEND=redis`` to swap in the
+    # Redis adapter (requires the ``redis`` package and ``REDIS_URL``).
+    # Caching is best for fan-out demos and refresh storms; defaults are
+    # conservative so the cache is invisible at low volume.
+    ANSWER_CACHE_ENABLED: bool = True
+    ANSWER_CACHE_BACKEND: Literal["memory", "redis"] = "memory"
+    ANSWER_CACHE_MAXSIZE: int = 256
+    ANSWER_CACHE_TTL_SEC: int = 600
+    REDIS_URL: str = "redis://localhost:6379/0"
+
+    # ── Auto-summary on ingest ────────────────────────────────────────────
+    # Single LLM call after a successful ingest to populate
+    # ``documents.summary`` (a 2-3 sentence abstract). Failure is silent
+    # so disabling the LLM doesn't break ingestion.
+    AUTO_SUMMARY_ENABLED: bool = True
 
     # ── Intent-driven retrieval tuning ────────────────────────────────────
     INTENT_TROUBLESHOOT_TOP_K_BOOST: int = 6
@@ -230,6 +279,88 @@ class Settings(BaseSettings):
         return schema
 
 
+# ── Per-request override channel ────────────────────────────────────────────
+# A ContextVar populated by the FastAPI middleware in
+# :mod:`app.api.middleware`. Each web request sees the global ``Settings``
+# singleton with these keys overlaid on top, so a user with
+# ``user_preferences.settings = {"LLM_PROVIDER": "openai"}`` can switch their
+# own pipeline without altering the process-wide config.
+#
+# We expose an explicit allowlist (``OVERRIDABLE_SETTINGS``) so a malicious or
+# misguided override cannot poke at things like database URLs, CORS, secret
+# keys, or timeouts.
+_settings_overrides: ContextVar[dict[str, Any]] = ContextVar(
+    "settings_overrides", default={}
+)
+
+OVERRIDABLE_SETTINGS: frozenset[str] = frozenset(
+    {
+        # LLM choice
+        "LLM_PROVIDER",
+        "GROQ_MODEL",
+        "OPENROUTER_MODEL",
+        "OPENAI_MODEL",
+        # Retrieval shape
+        "MAX_CHUNKS_RETURN",
+        "RERANK_TOP_N",
+        "MAX_PER_DOC",
+        "MMR_ENABLED",
+        "MMR_LAMBDA",
+        # Quality knobs
+        "HYDE_ENABLED",
+        "MULTI_QUERY_ENABLED",
+        "MULTI_QUERY_VARIANTS",
+        "ANSWER_VERIFIER_ENABLED",
+        "ANSWER_VERIFIER_MIN_SCORE",
+        "QUERY_REWRITE_ENABLED",
+        "CHAT_COREFERENCE_REWRITE",
+        "LOCAL_RERANKER_ENABLED",
+        # UX
+        "INCLUDE_CITATIONS_DEFAULT",
+        "AUTO_SUMMARY_ENABLED",
+        # Cache
+        "ANSWER_CACHE_ENABLED",
+        "ANSWER_CACHE_TTL_SEC",
+    }
+)
+
+
+def set_settings_overrides(values: dict[str, Any] | None):
+    """Install per-request settings overrides (filtered against the allowlist).
+
+    Returns the ``Token`` from ``ContextVar.set`` so callers (the middleware)
+    can ``reset`` it after the request finishes.
+    """
+    cleaned: dict[str, Any] = {}
+    for key, value in (values or {}).items():
+        if key in OVERRIDABLE_SETTINGS:
+            cleaned[key] = value
+    return _settings_overrides.set(cleaned)
+
+
+def reset_settings_overrides(token) -> None:
+    try:
+        _settings_overrides.reset(token)
+    except (LookupError, ValueError):
+        # Already reset by some other path — harmless.
+        pass
+
+
 @lru_cache
-def get_settings() -> Settings:
+def _base_settings() -> Settings:
     return Settings()
+
+
+def get_settings() -> Settings:
+    """Return the active :class:`Settings`, merged with per-request overrides.
+
+    Without overrides this is the same cached singleton (no copy cost). When
+    a middleware has set per-cookie overrides, we ``model_copy(update=…)`` so
+    the call site sees a mutated view without disturbing other concurrent
+    requests.
+    """
+    base = _base_settings()
+    overrides = _settings_overrides.get()
+    if not overrides:
+        return base
+    return base.model_copy(update=overrides)

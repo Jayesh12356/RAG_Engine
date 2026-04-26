@@ -10,6 +10,7 @@ import {
   FilesIcon,
   MessageSquareText,
   Activity,
+  Settings as SettingsIcon,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -23,6 +24,7 @@ const NAV: { href: string; label: string; icon: React.ComponentType<{ className?
   { href: "/app/query",     label: "Query",     icon: FileSearch },
   { href: "/app/documents", label: "Documents", icon: FilesIcon },
   { href: "/app/status",    label: "Status",    icon: Activity },
+  { href: "/app/settings",  label: "Settings",  icon: SettingsIcon },
 ]
 
 export function Sidebar() {

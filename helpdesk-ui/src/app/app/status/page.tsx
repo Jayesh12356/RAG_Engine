@@ -6,8 +6,11 @@ import {
   Activity,
   AlertTriangle,
   Brain,
+  Clock,
   Cloud,
   Database,
+  GitBranch,
+  Inbox,
   Layers,
   RefreshCcw,
   Sparkles,
@@ -19,6 +22,8 @@ import { StatusTile } from "@/components/status/status-tile"
 import { PingDot, type PingState } from "@/components/status/ping-dot"
 import { getHealth } from "@/lib/api"
 import type { HealthResponse } from "@/types"
+import { RecentActivityTab } from "@/components/status/recent-activity"
+import { MetricsGraphs } from "@/components/status/metrics-graphs"
 
 const POLL_MS = 12_000
 const STORAGE_KEY = "rag_engine.status.lastSeen"
@@ -34,6 +39,25 @@ function inferState(value: string): PingState {
   if (v.includes("error") || v.includes("offline") || v.includes("down")) return "error"
   if (v.includes("warn") || v.includes("degraded")) return "warn"
   return "ok"
+}
+
+function formatUptime(seconds?: number | null): string {
+  if (typeof seconds !== "number" || !isFinite(seconds) || seconds < 0) return "—"
+  const days = Math.floor(seconds / 86400)
+  const hours = Math.floor((seconds % 86400) / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  const secs = Math.floor(seconds % 60)
+  if (days > 0) return `${days}d ${hours}h`
+  if (hours > 0) return `${hours}h ${minutes}m`
+  if (minutes > 0) return `${minutes}m ${secs}s`
+  return `${secs}s`
+}
+
+function formatCount(value?: number | null): string {
+  if (typeof value !== "number" || !isFinite(value)) return "—"
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
+  if (value >= 10_000) return `${(value / 1_000).toFixed(1)}k`
+  return value.toLocaleString()
 }
 
 function jitter(base: number, spread = 0.25) {
@@ -250,6 +274,68 @@ export default function StatusPage() {
               hint={cfg.hint}
             />
           ))}
+        </div>
+
+        <motion.section
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.1 }}
+          className="mt-8 grid gap-3 md:grid-cols-4"
+        >
+          <div className="flex items-center gap-3 rounded-xl border border-border bg-card/60 p-4">
+            <span className="grid h-9 w-9 place-items-center rounded-md border border-border bg-card/60 text-muted-fg">
+              <Clock className="h-4 w-4" />
+            </span>
+            <div className="min-w-0">
+              <p className="text-[11px] uppercase tracking-wide text-muted-fg">Uptime</p>
+              <p className="truncate text-sm font-semibold text-fg">
+                {formatUptime(health?.uptime_seconds)}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3 rounded-xl border border-border bg-card/60 p-4">
+            <span className="grid h-9 w-9 place-items-center rounded-md border border-border bg-card/60 text-muted-fg">
+              <GitBranch className="h-4 w-4" />
+            </span>
+            <div className="min-w-0">
+              <p className="text-[11px] uppercase tracking-wide text-muted-fg">DB pool</p>
+              <p className="truncate text-sm font-semibold text-fg">
+                {health?.db_pool
+                  ? `${health.db_pool.checked_out ?? 0}/${health.db_pool.size ?? 0} in use`
+                  : "—"}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3 rounded-xl border border-border bg-card/60 p-4">
+            <span className="grid h-9 w-9 place-items-center rounded-md border border-border bg-card/60 text-muted-fg">
+              <Layers className="h-4 w-4" />
+            </span>
+            <div className="min-w-0">
+              <p className="text-[11px] uppercase tracking-wide text-muted-fg">Vector index</p>
+              <p className="truncate text-sm font-semibold text-fg">
+                {formatCount(health?.vector_index_size)} pts
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3 rounded-xl border border-border bg-card/60 p-4">
+            <span className="grid h-9 w-9 place-items-center rounded-md border border-border bg-card/60 text-muted-fg">
+              <Inbox className="h-4 w-4" />
+            </span>
+            <div className="min-w-0">
+              <p className="text-[11px] uppercase tracking-wide text-muted-fg">Ingest queue</p>
+              <p className="truncate text-sm font-semibold text-fg">
+                {formatCount(health?.queue_depth)} in flight
+              </p>
+            </div>
+          </div>
+        </motion.section>
+
+        <div className="mt-12">
+          <MetricsGraphs />
+        </div>
+
+        <div className="mt-12">
+          <RecentActivityTab />
         </div>
 
         <motion.footer

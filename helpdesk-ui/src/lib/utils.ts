@@ -50,12 +50,38 @@ export function uid(prefix = "id"): string {
   return `${prefix}_${Math.random().toString(36).slice(2, 11)}`
 }
 
+const UUID_PREFIX_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}_/i
+
+/** Drop a leading UUID-and-underscore so display names match what the user uploaded. */
+export function stripUuidPrefix(name: string | null | undefined): string {
+  if (!name) return ""
+  return name.replace(UUID_PREFIX_RE, "")
+}
+
+/**
+ * Clean a filename keeping its extension — used for the documents page where
+ * operators expect to see the real file (``Onboarding.pdf``) rather than a
+ * stripped citation label.
+ */
+export function cleanFilename(name: string | null | undefined): string {
+  if (!name) return "Untitled document"
+  const stripped = stripUuidPrefix(name)
+  return stripped.trim() || name.trim() || "Untitled document"
+}
+
+/** Format a long opaque id as ``aaaaaaaa…zzzz`` for compact display. */
+export function shortId(id: string | null | undefined, head = 8, tail = 4): string {
+  if (!id) return ""
+  if (id.length <= head + tail + 1) return id
+  return `${id.slice(0, head)}…${id.slice(-tail)}`
+}
+
 export function cleanPdfName(name: string | null | undefined): string {
   if (!name) return "Source document"
   // Strip a leading UUID-style prefix followed by an underscore, e.g.
   //   "4cefb52c-0282-4346-b159-9c180ab541e9_cv-jayesh-koli.pdf"
   //     -> "cv-jayesh-koli.pdf"
-  const stripped = name.replace(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}_/i, "")
+  const stripped = stripUuidPrefix(name)
   // Remove the trailing extension and any trailing "(1)" duplicate-suffix
   const noExt = stripped.replace(/\.[a-z0-9]{1,5}$/i, "")
   return noExt.replace(/\s*\(\d+\)\s*$/i, "").trim() || stripped

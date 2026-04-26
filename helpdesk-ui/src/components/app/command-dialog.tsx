@@ -23,6 +23,10 @@ import {
 import { useCommand } from "./command-palette"
 import { signOut } from "@/lib/auth"
 import { cn } from "@/lib/utils"
+import { getDocuments } from "@/lib/api"
+import type { DocumentListItem } from "@/types"
+import { useBookmarks } from "@/hooks/use-bookmarks"
+import { fuzzyScore } from "@/lib/fuzzy"
 
 const RECENT_KEY = "rag_engine.recent_queries"
 
@@ -32,6 +36,8 @@ export function CommandPaletteDialog() {
   const { setTheme, resolvedTheme } = useTheme()
   const [search, setSearch] = React.useState("")
   const [recent, setRecent] = React.useState<string[]>([])
+  const [docs, setDocs] = React.useState<DocumentListItem[]>([])
+  const { bookmarks } = useBookmarks()
 
   React.useEffect(() => {
     if (!open) return
@@ -42,6 +48,17 @@ export function CommandPaletteDialog() {
       setRecent(Array.isArray(list) ? list.slice(0, 8) : [])
     } catch {
       setRecent([])
+    }
+    let cancelled = false
+    getDocuments()
+      .then((r) => {
+        if (!cancelled) setDocs(r.documents.slice(0, 30))
+      })
+      .catch(() => {
+        if (!cancelled) setDocs([])
+      })
+    return () => {
+      cancelled = true
     }
   }, [open])
 
@@ -96,7 +113,13 @@ export function CommandPaletteDialog() {
             className="w-full max-w-xl overflow-hidden rounded-xl border border-border bg-card shadow-glow"
             onClick={(e) => e.stopPropagation()}
           >
-            <Command shouldFilter loop label="Command palette" className="text-fg">
+            <Command
+              shouldFilter
+              loop
+              label="Command palette"
+              className="text-fg"
+              filter={(value, q) => fuzzyScore(q, value)}
+            >
               <div className="flex items-center gap-2 border-b border-border px-3">
                 <Search className="h-4 w-4 text-muted-fg" />
                 <Command.Input
@@ -191,6 +214,41 @@ export function CommandPaletteDialog() {
                         onSelect={() => {
                           setOpen(false)
                           router.push(`/app/query?q=${encodeURIComponent(q)}`)
+                        }}
+                      />
+                    ))}
+                  </CommandSection>
+                )}
+
+                {bookmarks.length > 0 && (
+                  <CommandSection heading="Bookmarks">
+                    {bookmarks.slice(0, 8).map((b) => (
+                      <CmdItem
+                        key={b.id}
+                        icon={<Sparkles className="h-4 w-4" />}
+                        label={b.question}
+                        onSelect={() => {
+                          setOpen(false)
+                          router.push(`/app/query?q=${encodeURIComponent(b.question)}`)
+                        }}
+                      />
+                    ))}
+                  </CommandSection>
+                )}
+
+                {docs.length > 0 && (
+                  <CommandSection heading="Documents">
+                    {docs.map((d) => (
+                      <CmdItem
+                        key={d.document_id}
+                        icon={<Files className="h-4 w-4" />}
+                        label={d.pdf_name}
+                        hint={d.service_name}
+                        onSelect={() => {
+                          setOpen(false)
+                          router.push(
+                            `/app/documents?doc=${encodeURIComponent(d.document_id)}`,
+                          )
                         }}
                       />
                     ))}

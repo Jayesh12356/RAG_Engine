@@ -210,11 +210,24 @@ class QdrantVectorStore(VectorStore):
         return out
 
     def _build_filter(self, filter: dict[str, Any] | None) -> Any:
-        from qdrant_client.http.models import FieldCondition, Filter, MatchValue
+        from qdrant_client.http.models import (
+            FieldCondition,
+            Filter,
+            MatchAny,
+            MatchValue,
+        )
 
         if not filter:
             return None
-        conditions = [FieldCondition(key=k, match=MatchValue(value=v)) for k, v in filter.items()]
+        conditions: list[Any] = []
+        for key, value in filter.items():
+            if isinstance(value, dict) and "$in" in value:
+                # ``{"tags": {"$in": [...]}}`` — Spaces filter (Wave 2.9).
+                conditions.append(FieldCondition(key=key, match=MatchAny(any=list(value["$in"]))))
+            elif isinstance(value, list):
+                conditions.append(FieldCondition(key=key, match=MatchAny(any=value)))
+            else:
+                conditions.append(FieldCondition(key=key, match=MatchValue(value=value)))
         return Filter(must=conditions)
 
     # ------------------------------------------------------------------ hybrid query
@@ -348,6 +361,36 @@ class QdrantVectorStore(VectorStore):
     async def upsert_payload(self, collection: str, id: str, payload: dict[str, Any]) -> None:
         # Empty placeholder vector keeps signatures aligned for payload-only upsert paths.
         await self.upsert(collection=collection, id=id, vector=[0.0], payload=payload)
+
+    async def update_payload(
+        self,
+        collection: str,
+        chunk_ids: list[str],
+        payload: dict[str, Any],
+    ) -> None:
+        """Set fields on existing points without reindexing their vectors.
+
+        Used by tag updates so the new ``tags`` array becomes filterable on the
+        next query, with no embedding cost.
+        """
+        if not chunk_ids:
+            return
+        try:
+            from qdrant_client.http.models import PointIdsList
+        except ImportError:  # pragma: no cover — qdrant_client is an install-time req
+            return
+        ids = [_to_point_id(cid) for cid in chunk_ids]
+        set_method = getattr(self.client, "set_payload", None)
+        if not callable(set_method):
+            return
+        try:
+            await set_method(
+                collection_name=collection,
+                payload=payload,
+                points=PointIdsList(points=ids).points,
+            )
+        except Exception:
+            return
 
     async def fetch_payloads(
         self, collection: str, filter: dict[str, Any], limit: int = 10000

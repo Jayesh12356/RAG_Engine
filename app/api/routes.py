@@ -1,32 +1,62 @@
+import asyncio
+import json
 import os
 import uuid
+from typing import Any
 
 import structlog
-from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from sqlalchemy import delete, select
 
+from app.api.rate_limit import enforce_chat_or_query_limit
+
 from app.api.models import (
+    BranchSessionRequest,
+    BranchSessionResponse,
     ChunkListResponse,
     DeleteResponse,
     DeleteSessionResponse,
     DocumentListItem,
     DocumentListResponse,
+    DocumentTagsRequest,
+    DocumentTagsResponse,
     HealthResponse,
     HistoryResponse,
     IngestResponse,
+    IngestTaskStatusResponse,
+    LogEntryItem,
+    MetricsRecentItem,
+    MetricsRecentResponse,
     QueryAPIRequest,
+    RecentLogsResponse,
     SessionListResponse,
     SessionSummary,
+    SettingsSchemaField,
+    SettingsSchemaResponse,
+    TagsListResponse,
+    UserPreferencesResponse,
+    UserPreferencesUpdate,
+    WebhookCreateRequest,
+    WebhookListResponse,
+    WebhookSubscriptionItem,
+    WebhookUpdateRequest,
 )
 from app.chat.pipeline import ChatPipeline, ChatRequest, ChatResponse
 from app.chat.session import SessionManager
 from app.config import get_settings
-from app.db.relational import ChunkModel, DocumentModel, get_session_maker
+from app.db.relational import (
+    ChunkModel,
+    DocumentModel,
+    create_ingestion_task,
+    get_ingestion_task,
+    get_session_maker,
+)
 from app.db.vector_store import get_vector_store
 from app.ingestion.pipeline import IngestPipeline
 from app.ingestion.router import is_supported, supported_extensions_human
 from app.models.query import QueryRequest
+from app.query.cache import bump_corpus_version
 from app.query.pipeline import QueryPipeline
 from app.storage.pdf_storage import get_pdf_storage
 
@@ -41,9 +71,44 @@ def get_demo_mode(x_demo_mode: str | None = Header(None)) -> bool:
         return x_demo_mode.lower() == "true"
     return settings.DEMO_MODE
 
+
+def _read_uid_from_cookie(cookie_header: str | None) -> str | None:
+    """Pull ``rag_engine_uid`` out of a raw ``Cookie:`` header."""
+    if not cookie_header:
+        return None
+    for part in cookie_header.split(";"):
+        name, _, value = part.strip().partition("=")
+        if name == "rag_engine_uid" and value:
+            return value
+    return None
+
 @router.get("/health", response_model=HealthResponse)
 async def health_check(x_demo_mode: str | None = Header(None)):
     demo_mode = get_demo_mode(x_demo_mode)
+
+    from app.api.models import HealthDbPoolStats
+    from app.observability.runtime import (
+        db_pool_stats,
+        ingestion_queue_depth,
+        process_uptime_seconds,
+        vector_index_size,
+    )
+
+    pool_raw = db_pool_stats() if not demo_mode else None
+    pool_model = HealthDbPoolStats(**pool_raw) if pool_raw else None
+
+    vector_size: int | None = None
+    queue_depth: int | None = None
+    if not demo_mode:
+        try:
+            vector_size = await vector_index_size()
+        except Exception:
+            vector_size = None
+        try:
+            queue_depth = await ingestion_queue_depth()
+        except Exception:
+            queue_depth = None
+
     return HealthResponse(
         status="ok",
         llm_provider=settings.LLM_PROVIDER,
@@ -53,6 +118,10 @@ async def health_check(x_demo_mode: str | None = Header(None)):
         demo_mode=demo_mode,
         visual_capable=settings.llm_is_visual_capable,
         image_gen_active=settings.image_gen_active,
+        uptime_seconds=process_uptime_seconds(),
+        db_pool=pool_model,
+        vector_index_size=vector_size,
+        queue_depth=queue_depth,
     )
 
 async def run_ingest_and_cleanup(
@@ -61,6 +130,8 @@ async def run_ingest_and_cleanup(
     service_name_override: str | None,
     content: bytes,
     content_type: str,
+    task_id: str | None = None,
+    original_filename: str | None = None,
 ):
     try:
         pipeline = IngestPipeline(demo_mode=demo_mode)
@@ -69,6 +140,8 @@ async def run_ingest_and_cleanup(
             service_name_override,
             pdf_bytes=content,
             content_type=content_type,
+            task_id=task_id,
+            original_filename=original_filename,
         )
     except Exception as e:
         logger.error("background_ingest_error", error=str(e), path=tmp_path)
@@ -107,6 +180,10 @@ async def ingest_document(
         raise HTTPException(status_code=400, detail=f"Error reading file: {str(e)}") from e
 
     if background:
+        try:
+            await create_ingestion_task(task_id=task_id, filename=file.filename)
+        except Exception as exc:
+            logger.warning("ingest_task_create_failed", error=str(exc))
         background_tasks.add_task(
             run_ingest_and_cleanup,
             tmp_path,
@@ -114,6 +191,8 @@ async def ingest_document(
             service_name_override,
             content,
             file.content_type or "application/octet-stream",
+            task_id,
+            file.filename,
         )
         return IngestResponse(
             status="processing",
@@ -127,6 +206,7 @@ async def ingest_document(
                 service_name_override,
                 pdf_bytes=content,
                 content_type=file.content_type or "application/octet-stream",
+                original_filename=file.filename,
             )
             return IngestResponse(
                 document_id=result.document_id,
@@ -141,7 +221,54 @@ async def ingest_document(
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
 
-@router.post("/query")
+@router.get(
+    "/ingest/{task_id}/status",
+    response_model=IngestTaskStatusResponse,
+)
+async def get_ingest_status(task_id: str):
+    """Snapshot of an in-flight (or finished) background ingest task."""
+    task = await get_ingestion_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Ingest task not found")
+    return IngestTaskStatusResponse(**task)
+
+
+@router.get("/ingest/{task_id}/events")
+async def stream_ingest_events(task_id: str):
+    """SSE stream of progress patches until the task reaches a terminal state."""
+    initial = await get_ingestion_task(task_id)
+    if initial is None:
+        raise HTTPException(status_code=404, detail="Ingest task not found")
+
+    async def gen():
+        last_payload = ""
+        terminal = {"complete", "failed"}
+        deadline = asyncio.get_event_loop().time() + 600
+        while True:
+            task = await get_ingestion_task(task_id)
+            if task is None:
+                yield 'data: {"type":"error","message":"Task disappeared"}\n\n'
+                return
+            payload = json.dumps({"type": "progress", **task})
+            if payload != last_payload:
+                yield f"data: {payload}\n\n"
+                last_payload = payload
+            if task.get("status") in terminal:
+                yield f"data: {json.dumps({'type': 'final', **task})}\n\n"
+                return
+            if asyncio.get_event_loop().time() > deadline:
+                yield 'data: {"type":"error","message":"timeout"}\n\n'
+                return
+            await asyncio.sleep(1.0)
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
+@router.post("/query", dependencies=[Depends(enforce_chat_or_query_limit)])
 async def query_pipeline(
     request: QueryAPIRequest,
     x_demo_mode: str | None = Header(None)
@@ -154,6 +281,7 @@ async def query_pipeline(
         top_k=request.top_k,
         rerank_top_n=request.rerank_top_n,
         include_citations=request.include_citations,
+        tags=request.tags or [],
     )
     
     pipeline = QueryPipeline(demo_mode=demo_mode)
@@ -161,7 +289,7 @@ async def query_pipeline(
     return response
 
 
-@router.post("/query/stream")
+@router.post("/query/stream", dependencies=[Depends(enforce_chat_or_query_limit)])
 async def query_pipeline_stream(
     request: QueryAPIRequest,
     x_demo_mode: str | None = Header(None)
@@ -173,6 +301,7 @@ async def query_pipeline_stream(
         top_k=request.top_k,
         rerank_top_n=request.rerank_top_n,
         include_citations=request.include_citations,
+        tags=request.tags or [],
     )
     pipeline = QueryPipeline(demo_mode=demo_mode)
     return StreamingResponse(
@@ -181,14 +310,18 @@ async def query_pipeline_stream(
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
 
-@router.post("/chat", response_model=ChatResponse)
+@router.post(
+    "/chat",
+    response_model=ChatResponse,
+    dependencies=[Depends(enforce_chat_or_query_limit)],
+)
 async def chat_endpoint(request: ChatRequest, x_demo_mode: str | None = Header(None)):
     demo_mode = get_demo_mode(x_demo_mode)
     pipeline = ChatPipeline(demo_mode=demo_mode)
     return await pipeline.run(request)
 
 
-@router.post("/chat/stream")
+@router.post("/chat/stream", dependencies=[Depends(enforce_chat_or_query_limit)])
 async def chat_stream_endpoint(request: ChatRequest, x_demo_mode: str | None = Header(None)):
     demo_mode = get_demo_mode(x_demo_mode)
     pipeline = ChatPipeline(demo_mode=demo_mode)
@@ -260,6 +393,158 @@ async def get_chat_sessions(x_demo_mode: str | None = Header(None)):
         sessions = [SessionSummary(**s) for s in raw_sessions]
         return SessionListResponse(sessions=sessions, total=len(sessions))
 
+
+_SETTINGS_FIELD_DESCRIPTIONS: dict[str, str] = {
+    "LLM_PROVIDER": "Which LLM provider to use for generation.",
+    "GROQ_MODEL": "Model id used when LLM_PROVIDER=groq.",
+    "OPENROUTER_MODEL": "Model id used when LLM_PROVIDER=openrouter.",
+    "OPENAI_MODEL": "Model id used when LLM_PROVIDER=openai.",
+    "MAX_CHUNKS_RETURN": "Top-K passages returned to the LLM.",
+    "RERANK_TOP_N": "Top-N kept after re-ranking.",
+    "MAX_PER_DOC": "Per-document cap when MMR is on.",
+    "MMR_ENABLED": "Diversify final passages via MMR.",
+    "MMR_LAMBDA": "MMR balance (0=diverse, 1=relevant).",
+    "HYDE_ENABLED": "Expand the query with a hypothetical document.",
+    "MULTI_QUERY_ENABLED": "Generate multiple paraphrases of the question.",
+    "MULTI_QUERY_VARIANTS": "How many query paraphrases to generate.",
+    "ANSWER_VERIFIER_ENABLED": "Run a groundedness verifier pass.",
+    "ANSWER_VERIFIER_MIN_SCORE": "Minimum groundedness before refusal.",
+    "QUERY_REWRITE_ENABLED": "Auto-rewrite low-recall queries.",
+    "CHAT_COREFERENCE_REWRITE": "Rewrite follow-ups using chat history.",
+    "LOCAL_RERANKER_ENABLED": "Use a local cross-encoder when Cohere is down.",
+    "INCLUDE_CITATIONS_DEFAULT": "Show citations on /query by default.",
+    "AUTO_SUMMARY_ENABLED": "Summarise documents on ingest.",
+    "ANSWER_CACHE_ENABLED": "Reuse identical recent answers.",
+    "ANSWER_CACHE_TTL_SEC": "Answer cache TTL in seconds.",
+}
+
+
+def _python_type_name(value) -> str:
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    return "string"
+
+
+@router.get("/settings/schema", response_model=SettingsSchemaResponse)
+async def settings_schema(cookie: str | None = Header(None, alias="Cookie")):
+    """List the user-tunable settings, their defaults, and current overrides."""
+    from app.config import OVERRIDABLE_SETTINGS, _base_settings
+
+    base = _base_settings()
+    effective = get_settings()
+    fields: list[SettingsSchemaField] = []
+    enums = {
+        "LLM_PROVIDER": ["groq", "openrouter", "openai"],
+    }
+    for key in sorted(OVERRIDABLE_SETTINGS):
+        default = getattr(base, key, None)
+        current = getattr(effective, key, default)
+        type_name = "enum" if key in enums else _python_type_name(default)
+        fields.append(
+            SettingsSchemaField(
+                key=key,
+                type=type_name,
+                default=default,
+                current=current,
+                description=_SETTINGS_FIELD_DESCRIPTIONS.get(key, ""),
+                enum=enums.get(key),
+            )
+        )
+
+    overrides: dict = {}
+    uid = _read_uid_from_cookie(cookie)
+    if uid:
+        try:
+            from app.db.relational import get_user_preferences
+
+            prefs = await get_user_preferences(uid)
+            overrides = prefs.get("settings") or {}
+        except Exception:
+            overrides = {}
+
+    return SettingsSchemaResponse(fields=fields, overrides=overrides)
+
+
+@router.get("/preferences", response_model=UserPreferencesResponse)
+async def get_preferences(cookie: str | None = Header(None, alias="Cookie")):
+    """Return saved bookmarks + settings overrides for the cookie owner."""
+    uid = _read_uid_from_cookie(cookie)
+    if not uid:
+        raise HTTPException(status_code=401, detail="rag_engine_uid cookie required")
+    from app.db.relational import get_user_preferences
+
+    data = await get_user_preferences(uid)
+    return UserPreferencesResponse(**data)
+
+
+@router.put("/preferences", response_model=UserPreferencesResponse)
+async def update_preferences(
+    payload: UserPreferencesUpdate,
+    cookie: str | None = Header(None, alias="Cookie"),
+):
+    """Replace bookmarks and/or settings overrides for the cookie owner."""
+    uid = _read_uid_from_cookie(cookie)
+    if not uid:
+        raise HTTPException(status_code=401, detail="rag_engine_uid cookie required")
+    from app.db.relational import upsert_user_preferences
+
+    data = await upsert_user_preferences(
+        uid,
+        bookmarks=[b.model_dump() for b in payload.bookmarks] if payload.bookmarks is not None else None,
+        settings_overrides=payload.settings if payload.settings is not None else None,
+    )
+    return UserPreferencesResponse(**data)
+
+
+@router.post("/chat/sessions/{session_id}/branch", response_model=BranchSessionResponse)
+async def branch_chat_session(
+    session_id: str,
+    request: BranchSessionRequest,
+    x_demo_mode: str | None = Header(None),
+):
+    """Fork a chat session at the given turn, copying earlier turns into a new session."""
+    demo_mode = get_demo_mode(x_demo_mode)
+    if demo_mode:
+        manager = SessionManager(demo_mode=demo_mode)
+        turns = manager._memory_store.get(session_id) or []
+        anchor_idx = next(
+            (i for i, t in enumerate(turns) if t.get("id") == request.parent_turn_id),
+            None,
+        )
+        if anchor_idx is None:
+            raise HTTPException(status_code=404, detail="parent_turn_id not found in session")
+        new_id = str(uuid.uuid4())
+        copied = []
+        for t in turns[: anchor_idx + 1]:
+            new_turn = dict(t)
+            new_turn["id"] = str(uuid.uuid4())
+            new_turn["session_id"] = new_id
+            copied.append(new_turn)
+        manager._memory_store[new_id] = copied
+        return BranchSessionResponse(
+            session_id=new_id,
+            parent_session_id=session_id,
+            parent_turn_id=request.parent_turn_id,
+            copied_turns=len(copied),
+            title=request.title,
+        )
+
+    from app.db.relational import branch_session
+    try:
+        result = await branch_session(
+            parent_session_id=session_id,
+            parent_turn_id=request.parent_turn_id,
+            title=request.title,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return BranchSessionResponse(**result)
+
+
 @router.get("/pdfs/{pdf_name}")
 async def serve_pdf(pdf_name: str):
     safe_name = os.path.basename(pdf_name)
@@ -312,28 +597,210 @@ async def serve_pdf_by_document_id(document_id: str):
     )
 
 @router.get("/documents", response_model=DocumentListResponse)
-async def list_documents():
+async def list_documents(tag: str | None = None):
     try:
         async with session_maker() as session:
             stmt = select(DocumentModel).order_by(DocumentModel.created_at.desc())
             result = await session.execute(stmt)
             docs = result.scalars().all()
-            
+
             items = []
+            wanted = (tag or "").strip().lower()
             for d in docs:
                 meta = d.metadata_ or {}
+                doc_tags = list(d.tags or [])
+                if wanted and wanted not in {t.lower() for t in doc_tags if isinstance(t, str)}:
+                    continue
                 items.append(DocumentListItem(
                     document_id=d.id,
                     pdf_name=d.filename,
                     service_name=meta.get("service_name", "Unknown"),
                     total_pages=meta.get("total_pages", 0),
                     total_chunks=meta.get("total_chunks", 0),
-                    created_at=str(d.created_at)
+                    created_at=str(d.created_at),
+                    summary=d.summary,
+                    tags=doc_tags,
+                    version=int(d.version or meta.get("version") or 1),
                 ))
             return DocumentListResponse(documents=items, total=len(items))
     except Exception as e:
         logger.error("list_documents_error", error=str(e))
         raise HTTPException(status_code=500, detail="Database connection error.") from e
+
+
+@router.get("/tags", response_model=TagsListResponse)
+async def list_tags():
+    """Return every tag in use across the corpus, sorted by frequency."""
+    from app.db.relational import list_all_tags
+
+    return TagsListResponse(tags=await list_all_tags())
+
+
+@router.get("/metrics/recent", response_model=MetricsRecentResponse)
+async def list_recent_metrics(minutes: int = 60):
+    """Return the latest minute-by-minute aggregate metrics for the status page."""
+    from app.db.relational import recent_metrics
+
+    safe_minutes = max(1, min(int(minutes or 60), 1440))
+    points = [MetricsRecentItem(**row) for row in await recent_metrics(safe_minutes)]
+    return MetricsRecentResponse(points=points)
+
+
+@router.get("/webhooks", response_model=WebhookListResponse)
+async def list_webhook_subscriptions():
+    """List configured webhook subscriptions and the supported event names."""
+    from app.db.relational import WEBHOOK_EVENTS, list_webhooks
+
+    rows = await list_webhooks()
+    return WebhookListResponse(
+        events=list(WEBHOOK_EVENTS),
+        subscriptions=[WebhookSubscriptionItem(**row) for row in rows],
+    )
+
+
+@router.post("/webhooks", response_model=WebhookSubscriptionItem)
+async def create_webhook_subscription(payload: WebhookCreateRequest):
+    """Add a new webhook subscription."""
+    from app.db.relational import WEBHOOK_EVENTS, create_webhook
+
+    if payload.event not in WEBHOOK_EVENTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown event {payload.event!r}. Valid: {', '.join(WEBHOOK_EVENTS)}",
+        )
+    if not payload.url.lower().startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="url must be http(s)")
+
+    row = await create_webhook(
+        event=payload.event,
+        url=payload.url,
+        enabled=payload.enabled,
+        secret=payload.secret,
+    )
+    return WebhookSubscriptionItem(**row)
+
+
+@router.patch("/webhooks/{webhook_id}", response_model=WebhookSubscriptionItem)
+async def patch_webhook_subscription(webhook_id: str, payload: WebhookUpdateRequest):
+    """Update a webhook subscription's URL, secret, or enabled flag."""
+    from app.db.relational import update_webhook
+
+    row = await update_webhook(
+        webhook_id,
+        enabled=payload.enabled,
+        url=payload.url,
+        secret=payload.secret,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+    return WebhookSubscriptionItem(**row)
+
+
+@router.delete("/webhooks/{webhook_id}", response_model=dict)
+async def delete_webhook_subscription(webhook_id: str):
+    """Remove a webhook subscription."""
+    from app.db.relational import delete_webhook
+
+    deleted = await delete_webhook(webhook_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+    return {"id": webhook_id, "status": "deleted"}
+
+
+@router.post("/webhooks/{webhook_id}/test", response_model=dict)
+async def test_webhook_subscription(webhook_id: str):
+    """Send a synthetic test payload to a single subscription URL.
+
+    Operators expect the "Test" button to fire regardless of the enabled
+    flag (otherwise you can't verify a paused webhook before re-enabling
+    it), so we bypass :func:`dispatch_webhook` and deliver directly.
+    """
+    from app.db.relational import list_webhooks
+    from app.observability.webhooks import deliver_to_subscription
+
+    rows = await list_webhooks()
+    sub = next((r for r in rows if r["id"] == webhook_id), None)
+    if sub is None:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+
+    success = await deliver_to_subscription(
+        sub,
+        {"test": True, "subscription_id": webhook_id, "url": sub["url"]},
+    )
+    return {"id": webhook_id, "delivered": 1 if success else 0, "ok": success}
+
+
+@router.get("/logs/recent", response_model=RecentLogsResponse)
+async def list_recent_logs(limit: int = 200, level: str | None = None):
+    """Return the latest N entries from the in-memory log ring buffer.
+
+    The ``/app/status`` recent-activity tab polls this endpoint to surface
+    structured log events without needing an external sink.
+    """
+    from app.observability import recent_log_entries
+
+    safe_limit = max(1, min(int(limit or 200), 500))
+    items: list[LogEntryItem] = []
+    for raw in recent_log_entries(limit=safe_limit, level=level):
+        seq = int(raw.get("seq") or 0)
+        ts_value = raw.get("ts") or raw.get("timestamp") or 0
+        try:
+            ts = float(ts_value)
+        except (TypeError, ValueError):
+            ts = 0.0
+        level_value = str(raw.get("level") or "info")
+        event_value = raw.get("event")
+        extra: dict[str, Any] = {}
+        for key, value in raw.items():
+            if key in {"seq", "ts", "timestamp", "level", "event"}:
+                continue
+            try:
+                json.dumps(value)
+                extra[key] = value
+            except TypeError:
+                extra[key] = repr(value)
+        items.append(
+            LogEntryItem(
+                seq=seq,
+                ts=ts,
+                level=level_value,
+                event=str(event_value) if event_value is not None else None,
+                extra=extra,
+            )
+        )
+    return RecentLogsResponse(entries=items)
+
+
+@router.put("/documents/{document_id}/tags", response_model=DocumentTagsResponse)
+async def update_document_tags(document_id: str, payload: DocumentTagsRequest):
+    """Replace the tag list on a document and propagate to Qdrant payloads."""
+    from app.db.relational import set_document_tags
+
+    cleaned = await set_document_tags(document_id, payload.tags)
+    if cleaned is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    # Sync chunk payloads in the vector store so payload-filtered retrieval
+    # picks up the new tag set on the next request. Best-effort: a vector
+    # store outage shouldn't fail the metadata update itself.
+    try:
+        async with session_maker() as session:
+            stmt = select(ChunkModel.id).where(ChunkModel.document_id == document_id)
+            res = await session.execute(stmt)
+            chunk_ids = list(res.scalars().all())
+        if chunk_ids:
+            vector_store = get_vector_store()
+            updater = getattr(vector_store, "update_payload", None)
+            if callable(updater):
+                await updater(
+                    collection=settings.vector_collection,
+                    chunk_ids=chunk_ids,
+                    payload={"tags": cleaned},
+                )
+    except Exception as exc:  # pragma: no cover — vector outage shouldn't 500.
+        logger.warning("tags.vector_payload_sync_failed", error=str(exc))
+
+    return DocumentTagsResponse(document_id=document_id, tags=cleaned)
 
 @router.get("/documents/{document_id}/chunks", response_model=ChunkListResponse)
 async def list_chunks(document_id: str):
@@ -399,7 +866,9 @@ async def delete_document(document_id: str):
     # 6. Delete stored PDF bytes from selected backend
     storage = get_pdf_storage()
     await storage.delete_pdf(document_id)
-        
+
+    bump_corpus_version(reason="document_deleted")
+
     return DeleteResponse(
         document_id=document_id,
         status="deleted",

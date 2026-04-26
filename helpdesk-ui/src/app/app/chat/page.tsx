@@ -4,7 +4,7 @@ import * as React from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { FileUp, MessagesSquare } from "lucide-react"
 import { toast } from "sonner"
-import { Composer, type SlashAction } from "@/components/chat/composer"
+import { Composer, type ComposerSubmitPayload, type SlashAction } from "@/components/chat/composer"
 import { Conversation } from "@/components/chat/conversation"
 import { SessionsRail } from "@/components/chat/sessions-rail"
 import { Button } from "@/components/ui/button"
@@ -17,13 +17,16 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet"
 import {
+  branchChatSession,
   deleteChatSession,
   getChatHistory,
   getChatSessions,
+  isRateLimitError,
   postChatStream,
   postIngest,
 } from "@/lib/api"
-import type { HistoryTurn, SessionSummary } from "@/types"
+import { useBookmarks } from "@/hooks/use-bookmarks"
+import type { Citation, HistoryTurn, SessionSummary } from "@/types"
 import { uid } from "@/lib/utils"
 
 export default function ChatPage() {
@@ -35,6 +38,8 @@ export default function ChatPage() {
   const [demoMode, setDemoMode] = React.useState(false)
   const [category, setCategory] = React.useState("GENERAL")
   const [composer, setComposer] = React.useState("")
+  const [citationsByTurn, setCitationsByTurn] = React.useState<Record<string, Citation[]>>({})
+  const { addBookmark } = useBookmarks()
 
   const [mobileSessionsOpen, setMobileSessionsOpen] = React.useState(false)
 
@@ -92,9 +97,14 @@ export default function ChatPage() {
   }
 
   const submitQuestion = React.useCallback(
-    async (text: string) => {
+    async (text: string, directive?: string) => {
       if (!text.trim()) return
       setComposer("")
+
+      // Server-side directive prefix: ensures the LLM treats the user's text
+      // as a structured operation (summarize, compare, …) without polluting
+      // the displayed transcript with the directive itself.
+      const wireQuestion = directive ? `${directive}\n\nUser request: ${text}` : text
 
       const optimisticUser: HistoryTurn = {
         id: uid("turn"),
@@ -125,7 +135,7 @@ export default function ChatPage() {
         const result = await postChatStream(
           {
             session_id: sessionId,
-            question: text,
+            question: wireQuestion,
             service_category: category === "GENERAL" ? null : category,
             top_k: 20,
           },
@@ -134,18 +144,39 @@ export default function ChatPage() {
               prev.map((m) => (m.id === assistantId ? { ...m, content: m.content + delta } : m)),
             ),
           demoMode,
+          {
+            onCitations: (items) => {
+              setCitationsByTurn((prev) => ({ ...prev, [assistantId]: items }))
+            },
+          },
         )
 
         if (result.history) {
           setMessages(result.history)
+          const finalCitations = result.final?.citations
+          if (finalCitations && finalCitations.length && result.history.length > 0) {
+            const lastAssistant = [...result.history].reverse().find((t) => t.role === "assistant")
+            if (lastAssistant) {
+              setCitationsByTurn((prev) => ({
+                ...prev,
+                [lastAssistant.id]: finalCitations,
+              }))
+            }
+          }
         }
         if (result.session_id && result.session_id !== sessionId) {
           setSessionId(result.session_id)
         }
         refreshSessions(demoMode)
       } catch (err) {
-        const message = err instanceof Error ? err.message : "Failed to send message"
-        toast.error(message)
+        if (isRateLimitError(err)) {
+          toast.error(err.message, {
+            description: `Try again in ${err.retryAfterSeconds}s.`,
+          })
+        } else {
+          const message = err instanceof Error ? err.message : "Failed to send message"
+          toast.error(message)
+        }
         setMessages((prev) => prev.filter((m) => m.id !== assistantId))
       } finally {
         setStreamingId(null)
@@ -155,8 +186,12 @@ export default function ChatPage() {
     [category, demoMode, refreshSessions, sessionId],
   )
 
-  const handleSubmit = () => {
-    submitQuestion(composer)
+  const handleSubmit = (payload?: ComposerSubmitPayload) => {
+    if (payload && typeof payload === "object") {
+      submitQuestion(payload.text, payload.directive)
+    } else {
+      submitQuestion(composer)
+    }
   }
 
   const handleRegenerate = () => {
@@ -169,10 +204,43 @@ export default function ChatPage() {
     submitQuestion(lastUser.content)
   }
 
+  const handleBranch = async (turnId: string) => {
+    if (!sessionId) {
+      toast.error("Open a saved session before branching.")
+      return
+    }
+    const toastId = toast.loading("Forking conversation…")
+    try {
+      const res = await branchChatSession(sessionId, turnId, { demoMode })
+      toast.success("Branched into a new session", {
+        id: toastId,
+        description: `Copied ${res.copied_turns} turn${res.copied_turns === 1 ? "" : "s"}`,
+      })
+      await refreshSessions(demoMode)
+      await handleSelectSession(res.session_id)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to branch"
+      toast.error(message, { id: toastId })
+    }
+  }
+
   const handleSlash = (action: SlashAction) => {
     setComposer("")
     if (action === "clear") handleNewChat()
     if (action === "upload") fileInputRef.current?.click()
+    if (action === "regenerate") handleRegenerate()
+    if (action === "bookmark") {
+      const lastUser = [...messages].reverse().find((m) => m.role === "user")
+      if (!lastUser) {
+        toast.message("Nothing to bookmark yet")
+        return
+      }
+      addBookmark({
+        id: lastUser.id,
+        question: lastUser.content,
+      })
+      toast.success("Bookmarked")
+    }
   }
 
   const handleAttach = () => {
@@ -243,6 +311,7 @@ export default function ChatPage() {
         onSelect={handleSelectSession}
         onNewChat={handleNewChat}
         onDelete={handleDeleteSession}
+        onPickBookmark={(q) => setComposer(q)}
       />
 
       <div className="relative flex min-w-0 flex-1 flex-col">
@@ -276,6 +345,10 @@ export default function ChatPage() {
                   setMobileSessionsOpen(false)
                 }}
                 onDelete={handleDeleteSession}
+                onPickBookmark={(q) => {
+                  setComposer(q)
+                  setMobileSessionsOpen(false)
+                }}
                 showShell={false}
               />
             </SheetContent>
@@ -293,6 +366,8 @@ export default function ChatPage() {
           onSuggestion={(t) => submitQuestion(t)}
           onCopy={() => toast.success("Copied")}
           onRegenerate={handleRegenerate}
+          onBranch={handleBranch}
+          citationsByTurn={citationsByTurn}
           className="flex-1 min-h-0"
         />
         <Composer

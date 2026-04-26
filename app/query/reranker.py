@@ -5,6 +5,7 @@ import structlog
 
 from app.config import get_settings
 from app.models.query import SearchResult
+from app.query.local_reranker import maybe_local_rerank
 
 logger = structlog.get_logger(__name__)
 settings = get_settings()
@@ -54,7 +55,18 @@ class CohereReranker:
             
         except Exception as e:
             logger.warning("rerank_error_fallback", error=str(e))
-            # Accuracy-first local fallback: lexical overlap + original score
+            # Step 1: prefer a local cross-encoder if the operator opted in
+            # and ``sentence-transformers`` is installed. Quality ≈ Cohere.
+            try:
+                local = await maybe_local_rerank(question, results, top_n)
+            except Exception as exc:
+                logger.warning("rerank_local_fallback_failed", error=str(exc))
+                local = None
+            if local is not None:
+                logger.info("rerank_local_fallback_used", returned=len(local))
+                return local
+
+            # Step 2: lexical overlap + original score (always works offline).
             q_tokens = _tokenize(question)
             rescored = []
             for r in results:

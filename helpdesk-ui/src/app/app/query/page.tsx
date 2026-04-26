@@ -9,11 +9,12 @@ import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
 import { Skeleton } from "@/components/ui/skeleton"
 import { ConfidenceGauge } from "@/components/chat/confidence-gauge"
+import { AnswerToolbar } from "@/components/answer/answer-toolbar"
 import { MarkdownAnswer } from "@/components/answer/markdown-answer"
 import { SourceLink } from "@/components/answer/source-link"
 import { useTypewriter } from "@/components/query/typewriter"
 import { GlowOrb } from "@/components/motion/glow-orb"
-import { postQueryStream } from "@/lib/api"
+import { isRateLimitError, postQueryStream } from "@/lib/api"
 import type { QueryResponse } from "@/types"
 import { cn } from "@/lib/utils"
 
@@ -84,9 +85,16 @@ export default function QueryPage() {
         saveRecent(next)
         if (text && text !== question) setQuestion(text)
       } catch (err) {
-        const message = err instanceof Error ? err.message : "Query failed"
-        setError(message)
-        toast.error(message)
+        if (isRateLimitError(err)) {
+          setError(err.message)
+          toast.error(err.message, {
+            description: `Try again in ${err.retryAfterSeconds}s.`,
+          })
+        } else {
+          const message = err instanceof Error ? err.message : "Query failed"
+          setError(message)
+          toast.error(message)
+        }
       } finally {
         setLoading(false)
       }
@@ -275,6 +283,9 @@ export default function QueryPage() {
                     value={response.confidence}
                     refused={response.refused}
                     size={88}
+                    costUsd={response.cost_usd}
+                    latencyMs={response.latency_ms}
+                    numSources={response.sources?.length}
                   />
                 ) : (
                   <ConfidenceGauge value={0.5} label="Streaming…" size={88} />
@@ -285,6 +296,7 @@ export default function QueryPage() {
                 <MarkdownAnswer
                   content={response ? response.answer : streamAnswer}
                   streaming={!response}
+                  citations={response?.citations}
                 />
                 {!response && (
                   <span
@@ -297,6 +309,19 @@ export default function QueryPage() {
               {response?.sources?.length ? (
                 <div className="mt-7 flex flex-wrap items-center gap-x-3 gap-y-2">
                   <SourceLink sources={response.sources} />
+                </div>
+              ) : null}
+
+              {response && response.answer ? (
+                <div className="mt-4 flex justify-end">
+                  <AnswerToolbar
+                    content={response.answer}
+                    question={response.question}
+                    sources={response.sources}
+                    citations={response.citations}
+                    bookmarkId={response.question}
+                    shareId={response.question}
+                  />
                 </div>
               ) : null}
             </motion.section>

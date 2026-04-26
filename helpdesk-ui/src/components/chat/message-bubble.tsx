@@ -2,16 +2,15 @@
 
 import * as React from "react"
 import { motion } from "framer-motion"
-import { Check, Copy, RefreshCcw } from "lucide-react"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
-import { Button } from "@/components/ui/button"
 import { ConfidencePill } from "@/components/chat/confidence-gauge"
 import { TypingDots } from "@/components/chat/typing-dots"
+import { AnswerToolbar } from "@/components/answer/answer-toolbar"
 import { MarkdownAnswer } from "@/components/answer/markdown-answer"
 import { SourceLink } from "@/components/answer/source-link"
 import { messageVariants } from "@/lib/motion"
 import { cn, formatRelativeTime, initialsFromName } from "@/lib/utils"
-import type { HistoryTurn } from "@/types"
+import type { Citation, HistoryTurn } from "@/types"
 import { useSession } from "@/lib/auth"
 
 export interface MessageBubbleProps {
@@ -19,6 +18,10 @@ export interface MessageBubbleProps {
   streaming?: boolean
   onCopy?: (text: string) => void
   onRegenerate?: () => void
+  onBranch?: (turnId: string) => void
+  citations?: Citation[]
+  /** Question text the assistant turn is responding to. */
+  question?: string
 }
 
 export function MessageBubble({
@@ -26,21 +29,12 @@ export function MessageBubble({
   streaming = false,
   onCopy,
   onRegenerate,
+  onBranch,
+  citations,
+  question,
 }: MessageBubbleProps) {
   const { user } = useSession()
   const isUser = message.role === "user"
-  const [copied, setCopied] = React.useState(false)
-
-  const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(message.content)
-      onCopy?.(message.content)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1400)
-    } catch {
-      /* clipboard unavailable */
-    }
-  }
 
   return (
     <motion.div
@@ -87,7 +81,11 @@ export function MessageBubble({
             message.content
           ) : message.content ? (
             <>
-              <MarkdownAnswer content={message.content} streaming={streaming} />
+              <MarkdownAnswer
+                content={message.content}
+                streaming={streaming}
+                citations={citations}
+              />
               {streaming && (
                 <span
                   className="ml-0.5 inline-block h-4 w-[2px] translate-y-[2px] bg-primary animate-blink"
@@ -104,37 +102,24 @@ export function MessageBubble({
           <SourceLink sources={message.sources} className="mt-1" />
         ) : null}
 
-        {!isUser && (message.confidence !== null || onCopy || onRegenerate) && (
+        {!isUser && (
           <div className="flex flex-wrap items-center gap-2 text-xs">
             {message.confidence !== null && message.confidence !== undefined && (
               <ConfidencePill value={message.confidence} />
             )}
-
-            <div className="ml-auto flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                onClick={handleCopy}
-                className="h-7 w-7 text-muted-fg hover:text-fg"
-                aria-label="Copy answer"
-              >
-                {copied ? <Check className="h-3.5 w-3.5 text-success" /> : <Copy className="h-3.5 w-3.5" />}
-              </Button>
-              {onRegenerate && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  onClick={onRegenerate}
-                  className="h-7 w-7 text-muted-fg hover:text-fg"
-                  aria-label="Regenerate answer"
-                  disabled={streaming}
-                >
-                  <RefreshCcw className="h-3.5 w-3.5" />
-                </Button>
-              )}
-            </div>
+            <AnswerToolbar
+              content={message.content}
+              question={question}
+              sources={message.sources}
+              citations={citations}
+              bookmarkId={message.id}
+              shareId={message.id}
+              onBranch={onBranch ? () => onBranch(message.id) : undefined}
+              onRegenerate={onRegenerate}
+              onCopy={onCopy}
+              streaming={streaming}
+              className="ml-auto opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100"
+            />
           </div>
         )}
       </div>
