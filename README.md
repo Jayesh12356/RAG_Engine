@@ -1,5 +1,7 @@
 # RAG Engine
-
+<p align="center">
+  <img src="docs/RAG_Engine.png" alt="RAG-Engine — Multi-Agent Chat System" width="800">
+</p>
 A premium, grounded, confidence-gated **document Q&A engine**. Drop in PDFs, Word, Excel/CSV, PowerPoint, text, Markdown, HTML, JSON or images and ask questions with **inline citations**, **calibrated confidence**, **safe refusals** when the evidence is thin, and **rich visual answers** (Mermaid, Recharts, KaTeX, generated images) whenever the active model can produce them.
 
 > Live demo: not deployed yet. Run locally — see [`START_HERE.md`](START_HERE.md) for a single AI-agent prompt that boots everything end-to-end, or follow the manual steps below.
