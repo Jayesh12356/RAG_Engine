@@ -1,9 +1,11 @@
 import asyncio
 import sys
-import structlog
 from contextlib import asynccontextmanager
+
+import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
 from app.config import get_settings
 
 logger = structlog.get_logger()
@@ -11,7 +13,7 @@ logger = structlog.get_logger()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
-    
+
     provider = settings.LLM_PROVIDER
     if provider == "groq":
         model = settings.GROQ_MODEL
@@ -19,13 +21,24 @@ async def lifespan(app: FastAPI):
         model = settings.OPENROUTER_MODEL
     else:
         model = settings.OPENAI_MODEL
-        
+
     logger.info(
         "llm.provider.active",
         provider=provider,
         model=model,
-        embed_provider=settings.EMBEDDING_PROVIDER
+        embed_provider=settings.EMBEDDING_PROVIDER,
     )
+
+    # Embedding consistency check: a wrong-dim provider would silently corrupt
+    # the Qdrant collection and break retrieval. Abort startup loudly instead.
+    from app.llm.client import verify_embedding_consistency
+
+    try:
+        await verify_embedding_consistency()
+    except Exception as exc:
+        logger.error("startup.embedding_consistency_failed", error=str(exc))
+        raise
+
     yield
 
 def create_app() -> FastAPI:

@@ -1,7 +1,10 @@
 import os
+import re
+
 import fitz
 import structlog
 from pydantic import BaseModel
+
 from app.config import get_settings
 from app.ingestion.ocr_parser import extract_page_text_with_ocr
 
@@ -22,13 +25,24 @@ class ParsedPage(BaseModel):
     service_name: str
     section_title: str
     total_pages: int
+    # ``kind`` lets the chunker branch: "prose" gets the recursive splitter,
+    # "table" / "row" / "slide" / "image" are kept whole. PDF pages default to
+    # "prose" so existing behaviour is preserved.
+    kind: str = "prose"
+
+_PAGE_NUM_RE = re.compile(r"^\s*(?:page\s+)?\d+\s*(?:of\s+\d+)?\s*$", flags=re.IGNORECASE)
+
 
 def _extract_page_text_and_title(page: fitz.Page) -> tuple[str, str]:
-    rect = page.rect
-    height = rect.height
-    top_margin = height * 0.05
-    bottom_margin = height * 0.95
+    """Extract page text + a best-guess section title.
 
+    No bbox-based header/footer filter is applied: that filter used to drop
+    the top 5% / bottom 5% of every page, which on single-page documents
+    (CVs, posters) silently deleted the document title — exactly the
+    information needed to answer "Who is …?" questions. We instead drop
+    *only* obvious pagination markers (``"Page 3 of 12"``), so document
+    titles and corner-printed identifiers survive.
+    """
     blocks = page.get_text("dict")["blocks"]
     page_text: list[str] = []
     max_font_size = -1.0
@@ -36,9 +50,6 @@ def _extract_page_text_and_title(page: fitz.Page) -> tuple[str, str]:
 
     for block in blocks:
         if block["type"] != 0:
-            continue
-        bbox = block["bbox"]
-        if bbox[1] < top_margin or bbox[3] > bottom_margin:
             continue
 
         block_text_parts: list[str] = []
@@ -52,8 +63,11 @@ def _extract_page_text_and_title(page: fitz.Page) -> tuple[str, str]:
                     max_font_size = span_size
                     section_title = span_text.strip()
         block_text = " ".join(block_text_parts).strip()
-        if block_text:
-            page_text.append(block_text)
+        if not block_text:
+            continue
+        if _PAGE_NUM_RE.match(block_text):
+            continue
+        page_text.append(block_text)
     return "\n\n".join(page_text).strip(), section_title
 
 

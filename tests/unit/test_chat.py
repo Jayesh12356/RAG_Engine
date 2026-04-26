@@ -1,7 +1,10 @@
-import pytest
-from app.chat.session import SessionManager
-from app.chat.pipeline import ChatPipeline, ChatRequest
 from unittest.mock import AsyncMock
+
+import pytest
+
+from app.chat.pipeline import ChatPipeline, ChatRequest
+from app.chat.session import SessionManager
+
 
 @pytest.mark.asyncio
 async def test_session_manager_demo_create():
@@ -33,6 +36,8 @@ async def test_session_history_limit():
     assert history[-1].content == "question 9"
 
 from app.models.query import SearchResult
+
+
 @pytest.mark.asyncio
 async def test_chat_pipeline_demo_new_session():
     pipeline = ChatPipeline(demo_mode=True)

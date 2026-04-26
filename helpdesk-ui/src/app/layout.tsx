@@ -1,32 +1,53 @@
-import type { Metadata } from "next";
-import { Inter } from "next/font/google";
-import "./globals.css";
-import Nav from "@/components/nav";
-
-const inter = Inter({ 
-  subsets: ["latin"],
-  display: "swap",
-  variable: "--font-inter",
-});
+import type { Metadata, Viewport } from "next"
+import { GeistSans } from "geist/font/sans"
+import { GeistMono } from "geist/font/mono"
+import { Toaster } from "sonner"
+import { ThemeProvider } from "@/components/theme-provider"
+import "./globals.css"
 
 export const metadata: Metadata = {
-  title: "IT Helpdesk — RAG Intelligence",
-  description: "Intelligent IT Helpdesk powered by RAG, multi-provider LLMs, and real-time document retrieval",
-};
+  title: "RAG Engine — Ask anything across every document",
+  description:
+    "A premium document Q&A engine that turns any document — PDF, Word, Excel/CSV, PowerPoint, text, JSON or image — into grounded, cited answers.",
+  applicationName: "RAG Engine",
+}
+
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#ffffff" },
+    { media: "(prefers-color-scheme: dark)", color: "#0a0d14" },
+  ],
+}
 
 export default function RootLayout({
   children,
 }: Readonly<{
-  children: React.ReactNode;
+  children: React.ReactNode
 }>) {
   return (
-    <html lang="en" className={`${inter.variable} bg-slate-50 text-slate-900`}>
-      <body className={`${inter.className} antialiased`}>
-        <Nav />
-        <main className="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 min-h-[calc(100vh-var(--nav-height))] pb-20">
+    <html
+      lang="en"
+      suppressHydrationWarning
+      className={`${GeistSans.variable} ${GeistMono.variable}`}
+    >
+      <body className="min-h-screen bg-bg text-fg font-sans antialiased">
+        <ThemeProvider
+          attribute="class"
+          defaultTheme="dark"
+          enableSystem
+          disableTransitionOnChange={false}
+        >
           {children}
-        </main>
+          <Toaster
+            position="bottom-right"
+            theme="system"
+            toastOptions={{
+              className:
+                "border border-border bg-card text-card-fg shadow-card",
+            }}
+          />
+        </ThemeProvider>
       </body>
     </html>
-  );
+  )
 }

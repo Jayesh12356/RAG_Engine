@@ -1,8 +1,11 @@
-import pytest
-from app.config import Settings
-from app.db.vector_store import get_vector_store, QdrantVectorStore, MilvusVectorStore
-from app.db.relational import get_engine
 import os
+
+import pytest
+
+from app.config import Settings
+from app.db.relational import get_engine
+from app.db.vector_store import MilvusVectorStore, QdrantVectorStore, get_vector_store
+
 
 def test_settings_load():
     settings = Settings(LLM_PROVIDER="groq", EMBEDDING_PROVIDER="openai", VECTOR_DB="qdrant", RELATIONAL_DB="postgres")

@@ -1,12 +1,15 @@
-import pytest
 import os
 import uuid
-import fitz
 from unittest.mock import AsyncMock, MagicMock
-from app.ingestion.pdf_parser import parse_pdf, ParsedPage, _detect_pdf_type
-from app.ingestion.chunker import chunk_pages, ChunkData
+
+import fitz
+import pytest
+
+from app.ingestion.chunker import ChunkData, chunk_pages
+from app.ingestion.pdf_parser import ParsedPage, _detect_pdf_type, parse_pdf
+from app.ingestion.pipeline import IngestionResult, IngestPipeline
 from app.ingestion.sparse import BM25SparseEncoder
-from app.ingestion.pipeline import IngestPipeline, IngestionResult
+
 
 def test_parse_pdf_demo():
     pages = parse_pdf("nonexistent.pdf", demo_mode=True)

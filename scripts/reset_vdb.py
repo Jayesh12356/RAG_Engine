@@ -1,8 +1,10 @@
 import asyncio
 import os
+
 os.environ['PYTHONPATH'] = '.'
 from app.config import get_settings
 from app.db.vector_store import get_vector_store
+
 
 async def reset_vdb():
     print("Resetting vector db...")

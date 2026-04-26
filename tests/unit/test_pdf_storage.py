@@ -1,8 +1,9 @@
 import base64
+
 import pytest
 
 from app.config import Settings
-from app.storage.pdf_storage import get_pdf_storage, RelationalPdfStorage, VectorPdfStorage
+from app.storage.pdf_storage import RelationalPdfStorage, VectorPdfStorage, get_pdf_storage
 
 
 def test_pdf_storage_factory_relational(monkeypatch):

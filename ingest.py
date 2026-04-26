@@ -1,7 +1,8 @@
 import asyncio
-import structlog
 from pathlib import Path
+
 from app.ingestion.pipeline import IngestPipeline
+
 
 async def ingest():
     pdf_path = Path("data/sample_pdfs/VirtualPrivateNetwork.pdf")

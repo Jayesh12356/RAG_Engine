@@ -1,248 +1,294 @@
-  # IT Helpdesk RAG System — User & Technical Manual (Latest)
+# IT Helpdesk RAG System — User & Technical Manual
 
-  This manual reflects the current implementation in this repository, including:
-  - relevance-first retrieval and answer generation,
-  - streaming responses for Query and Chat,
-  - provider failover and fallback behavior,
-  - current API contracts and operations.
+This manual reflects the current implementation in this repository, including:
 
-  ---
+- True hybrid retrieval (Qdrant dense + sparse with server-side RRF fusion).
+- Optional LLM-driven query rewriting when initial signal is weak.
+- MMR diversification + per-document caps.
+- Calibrated confidence scoring and shared evidence/confidence gates across query and chat.
+- Provider failover for completion **and** embeddings (with bounded retries on streaming).
+- Optional grounded citations on `/query` and `/chat`.
+- OCR (Tesseract + optional Vision LLM fallback) for image PDFs and standalone image files.
+- Heading-aware chunking and BM25 corpus persistence between ingest and query.
+- Universal document ingestion through a single format router — PDF, DOCX, XLSX/XLS/CSV, PPTX, TXT/Markdown/HTML/JSON, and images (PNG/JPG/WEBP/TIFF/BMP).
 
-  ## 1) System Overview
+---
 
-  The platform is a document-grounded IT assistant:
-  - Upload PDFs (network, VPN, SSL, Linux, cloud, etc.).
-  - Ask questions in Query mode or Chat mode.
-  - Receive structured answers with confidence and source chunks.
-  - Refuse when evidence is insufficient.
+## 1) System Overview
 
-  Core design goal: **accuracy over speed**.  
-  Latency is acceptable if it improves answer quality and grounding.
+The platform is a document-grounded assistant:
 
-  ---
+- Upload documents — PDFs, Word, Excel/CSV, PowerPoint, text, Markdown, HTML, JSON or images.
+- Ask questions in Query mode or Chat mode.
+- Receive structured answers with calibrated confidence, source chunks, and (optionally) grounded citations.
+- Refuse cleanly when evidence is insufficient.
 
-  ## 2) End-to-End Data Flow
+Core design goal: **accuracy over speed**. Latency is acceptable when it improves grounding.
 
-  ### Ingestion Flow
-  1. Frontend uploads PDF to `POST /ingest`.
-  2. Parser extracts page text and metadata.
-  3. Chunker splits content into overlapping chunks.
-  4. Dense embeddings are generated.
-  5. Chunks + vectors + metadata are upserted into vector DB.
-  6. Document/chunk metadata is stored in relational DB.
-  7. Raw PDF bytes are stored through configurable PDF storage backend:
-     - relational DB (`document_files` table), or
-     - vector DB payload storage (chunked records).
+---
 
-  ### Query Flow (non-streaming)
-  1. `POST /query` receives question.
-  2. Router classifies likely domain/intent (keyword-based fast routing).
-  3. Hybrid search retrieves candidate chunks.
-  4. Reranker scores candidates (Cohere when available).
-  5. Evidence gate validates signal quality.
-  6. Generator produces answer with strict grounding rules.
-  7. Confidence gate decides answer vs refusal.
-  8. Response includes confidence + sources.
+## 2) End-to-End Data Flow
 
-  ### Query Flow (streaming)
-  1. `POST /query/stream` starts SSE stream.
-  2. Emits `delta` events for incremental text (when LLM stream succeeds).
-  3. Emits a `final` event with full `QueryResponse` payload.
-  4. If stream provider fails, server falls back and still emits `final`.
+### Ingestion flow
 
-  ### Chat Flow (non-streaming and streaming)
-  1. Session is created or resumed.
-  2. Recent history is loaded (`CHAT_HISTORY_TURNS`).
-  3. Retrieval + rerank run similarly to Query.
-  4. Prompt includes conversation history.
-  5. Answer is generated or fallback is used.
-  6. User/assistant turns are persisted.
-  7. Chat response includes updated history.
+1. Frontend uploads a document to `POST /ingest` (any format the router accepts — see [`app/ingestion/router.py`](../../app/ingestion/router.py)).
+2. The format router dispatches by file extension to the right extractor: `pdf`, `docx`, `spreadsheet` (xlsx/xls/csv), `pptx`, `text` (txt/md/markdown/html/htm/json), or `image` (png/jpg/jpeg/webp/tiff/tif/bmp).
+3. PDFs are sub-classified (`text_pdf`, `image_pdf`, `mixed_pdf`) and parsed with PyMuPDF for text plus Tesseract OCR for image pages, with an optional Vision-LLM fallback for low-confidence pages. Other formats use their dedicated extractor (python-docx, openpyxl/xlrd/pandas, python-pptx, beautifulsoup4 + markdown + chardet, Pillow + OCR).
+4. Heading-aware chunking splits content while keeping headings attached to their first paragraph and preserving tables/lists.
+5. Dense embeddings are generated via the configured provider (`embed_documents` with provider-failover for OpenAI / OpenRouter / Cohere; Cohere uses `input_type=search_document`).
+6. Sparse BM25 vectors are computed; corpus statistics (idf, avgdl, k1, b) are persisted under `SPARSE_INDEX_DIR/bm25.json` so query-time encoding stays consistent.
+7. Vectors and metadata are upserted into the configured vector DB. On Qdrant the collection uses **named dense + sparse vectors** so server-side hybrid retrieval can fuse them.
+8. Document/chunk metadata persists to the relational DB.
+9. Raw document bytes are stored through the configured PDF storage backend (relational table `document_files` or vector payload chunks); the same backend serves the original asset on demand for source links.
 
-  Streaming endpoint: `POST /chat/stream` (SSE with `delta` + `final`).
+### Query flow (non-streaming)
 
-  ---
+1. `POST /query` receives the question.
+2. Router classifies likely category and intent (keyword-based fast path).
+3. Initial hybrid search runs concurrently with the router (dense + sparse + RRF on Qdrant, dense-only on Milvus).
+4. **Optional query rewrite** (when `QUERY_REWRITE_ENABLED=true` and the top initial score < `QUERY_REWRITE_TRIGGER_SCORE`): an LLM rewrites the question with acronym expansions sourced from the same router keywords; the search re-runs with `top_k` boosted by intent (`troubleshoot` / `howto`).
+5. Reranker scores the candidates (Cohere primary, lexical-overlap fallback).
+6. **Diversification**: per-document cap (`MAX_PER_DOC`) followed by MMR (`MMR_LAMBDA`) when `MMR_ENABLED=true`.
+7. Shared **evidence gate** (`app/query/gates.py`) checks `RELEVANCE_MIN_TOP_SCORE`, `RELEVANCE_MIN_SECOND_SCORE`, and `RELEVANCE_MIN_SCORE_GAP`.
+8. Generator builds a category-aware system prompt and produces an answer with strict grounding rules.
+9. **Calibrated confidence** blends top reranker score, top↔second margin, answer↔context Jaccard overlap, refusal phrase detection, and a length penalty.
+10. Confidence gate refuses below `CONFIDENCE_THRESHOLD`; otherwise returns `QueryResponse` with optional `citations`.
 
-  ## 3) Accuracy and Grounding Strategy
+### Query flow (streaming)
 
-  Current accuracy controls:
-  - **Grounding prompt rules** in `app/query/rag_generator.py` enforce context-only answers.
-  - **Context sanitization and filtering** remove low-signal chunks/fragments before generation.
-  - **Evidence gating** in query/chat pipelines rejects weak retrieval sets.
-  - **Confidence gating** refuses low-confidence answers.
-  - **Reranker fallback scoring** (lexical overlap + base score) when Cohere is rate-limited.
-  - **LLM provider failover** (preferred provider, then alternates if configured) in `app/llm/client.py`.
-  - **Extractive fallback answer synthesis** when generation fails (rate limits, provider errors).
+1. `POST /query/stream` runs the same retrieval / gating pipeline.
+2. While the LLM streams, each chunk is emitted as `data: {"type":"delta","text":"…"}`.
+3. After completion the server emits `data: {"type":"final","payload": QueryResponse}` with the calibrated confidence and (optional) citations.
+4. If the streaming connection fails after bounded retries, the server falls back to extractive synthesis from the top reranked chunks and still emits a `final` event.
 
-  Important: no LLM system can guarantee literal 100% correctness.  
-  This stack is engineered to maximize grounded correctness and fail safely when uncertain.
+### Chat flow (non-streaming and streaming)
 
-  ---
+1. Session is created or resumed; recent history (`CHAT_HISTORY_TURNS`) is loaded.
+2. Retrieval, rewrite, rerank, and diversification mirror the query flow.
+3. The user prompt is prefixed with a compact `Previous conversation` block.
+4. Generation runs with the same calibrated confidence + shared `confidence_label` mapping. Refusals never expose raw exceptions.
+5. User and assistant turns are persisted; the response includes the updated history.
+6. `POST /chat/stream` emits the same `delta` + `final` SSE protocol.
 
-  ## 4) Streaming Contract (SSE)
+---
 
-  Both `/query/stream` and `/chat/stream` emit lines in SSE format:
+## 3) Accuracy and Grounding Strategy
 
-  `data: {"type":"delta","text":"..."}`
+| Layer | Mechanism |
+| --- | --- |
+| Retrieval | Hybrid dense + sparse with server-side RRF (Qdrant); BM25 stats persisted to disk so query-time encoding matches ingest-time. |
+| Rewrite | Optional LLM rewrite, gated on weak initial top score and `QUERY_REWRITE_ENABLED`. |
+| Rerank | Cohere primary with lexical-overlap fallback when the API is unavailable. |
+| Diversification | Per-document cap + MMR balance relevance with novelty before generation. |
+| Evidence gate | Shared verdict using top, second, and margin thresholds; both pipelines use the same code path. |
+| Generation | Strict grounding prompt + service-category domain hint; preamble/header noise is stripped post-generation. |
+| Confidence gate | Calibrated `[0.10, 0.98]` confidence with refusal phrase short-circuit and uncertainty penalty. |
+| Fallback | Tightened extractive answer (requires `MIN_FALLBACK_OVERLAP` token-set coverage); refuses cleanly otherwise. |
+| Citations | Optional structured citation list (`include_citations: true` or `INCLUDE_CITATIONS_DEFAULT`). |
 
-  `data: {"type":"final","payload":{...}}`
+No LLM system can guarantee 100% literal correctness. This stack is engineered to maximise grounded correctness and **fail safely when uncertain** — the refusal phrase is a deliberate signal, not a defect.
 
-  Frontend behavior:
-  - Render deltas immediately for fast perceived response.
-  - Replace with final authoritative payload at stream end.
+---
 
-  ---
+## 4) Streaming Contract (SSE)
 
-  ## 5) Provider and Fallback Behavior
+Both `/query/stream` and `/chat/stream` emit lines in SSE format:
 
-  ### LLM generation
-  - Preferred provider from `LLM_PROVIDER`.
-  - Automatic failover across configured providers with keys:
-    - `groq`
-    - `openai`
-    - `openrouter`
-  - Applies to both normal completion and streaming completion.
+```text
+data: {"type":"delta","text":"..."}
 
-  ### Reranking
-  - Primary: Cohere rerank.
-  - On rerank failure/rate-limit: local relevance fallback (lexical overlap + retrieval score).
+data: {"type":"final","payload":{...}}
+```
 
-  ### Final fallback
-  - If generation fails after provider attempts, system uses extractive fallback from top chunks.
-  - If evidence is weak, system refuses:
-    - `"I don't have information on this topic in our documentation."`
+Frontend behaviour:
 
-  ---
+- Render deltas immediately for fast perceived response.
+- Replace with the authoritative `final` payload at stream end.
+- Treat any `{"type":"error",...}` event as a refusal — show the canonical refusal copy.
 
-  ## 6) API Endpoints (Current)
+---
 
-  ### Health
-  - `GET /health`
+## 5) Provider and Fallback Behaviour
 
-  ### Ingestion and documents
-  - `POST /ingest`
-  - `GET /documents`
-  - `GET /documents/{document_id}/chunks`
-  - `DELETE /documents/{document_id}`
-  - `GET /pdfs/{pdf_name}`
-  - `GET /pdfs/by-id/{document_id}` (primary source link endpoint)
+### LLM completion
 
-  ### Query
-  - `POST /query`
-  - `POST /query/stream` (SSE)
+- Preferred provider from `LLM_PROVIDER`, then automatic failover across providers with valid keys (`groq`, `openai`, `openrouter`).
+- Per-provider `LLM_REQUEST_TIMEOUT_SEC` and `LLM_RETRY_ATTEMPTS` apply.
+- Streaming completion uses bounded retries on connection establishment (failures fall through to extractive synthesis without leaking stack traces to clients).
 
-  ### Chat
-  - `POST /chat`
-  - `POST /chat/stream` (SSE)
-  - `GET /chat/sessions`
-  - `GET /chat/{session_id}/history`
-  - `DELETE /chat/{session_id}`
+### Embeddings
 
-  ---
+- Same cross-provider failover list (OpenAI, OpenRouter, Cohere).
+- Cohere queries use `input_type=search_query` for `embed_query` and `search_document` for `embed_documents`.
 
-  ## 7) Key Configuration (from `.env` + `app/config.py`)
+### Reranking
 
-  ### LLM
-  - `LLM_PROVIDER` = `groq | openrouter | openai`
-  - `GROQ_MODEL`, `OPENROUTER_MODEL`, `OPENAI_MODEL`
-  - `LLM_REQUEST_TIMEOUT_SEC`
-  - `LLM_RETRY_ATTEMPTS`
+- Cohere rerank when configured.
+- Lexical-overlap fallback (token Jaccard + retrieval score) on rerank failure or rate limit.
 
-  ### Embeddings
-  - `EMBEDDING_PROVIDER`
-  - `OPENAI_EMBEDDING_MODEL`, `OPENROUTER_EMBEDDING_MODEL`, `COHERE_EMBEDDING_MODEL`
-  - `EMBEDDING_DIM`
+### Final fallback
 
-  ### Retrieval and confidence
-  - `MAX_CHUNKS_RETURN`
-  - `RERANK_TOP_N`
-  - `CONFIDENCE_THRESHOLD`
-  - `RELEVANCE_MIN_TOP_SCORE`
-  - `RELEVANCE_MIN_SECOND_SCORE`
-  - `RELEVANCE_MIN_SCORE_GAP`
+- Extractive fallback synthesises an answer from the top reranked chunks when the LLM is unavailable.
+- If overlap < `MIN_FALLBACK_OVERLAP`, the extractive path refuses cleanly with `confidence=0.10` instead of stitching unrelated text.
 
-  ### Chat/session
-  - `CHAT_HISTORY_TURNS`
-  - `MAX_SESSIONS`
+---
 
-  ### Databases
-  - `VECTOR_DB` (`qdrant | milvus`)
-  - `RELATIONAL_DB` (`postgres | mysql`)
-  - `PDF_STORAGE_BACKEND` (`relational | vector`) — controls where raw PDFs are stored
-  - `PDF_VECTOR_COLLECTION` — dedicated vector collection for PDF payload chunks
-  - `PDF_VECTOR_CHUNK_BYTES` — chunk size for vector payload storage
+## 6) API Endpoints
 
-  ### Open PDF source behavior
-  - Source links are generated as `/pdfs/by-id/{document_id}`.
-  - Backend loads PDF bytes from configured storage backend and returns inline PDF.
-  - Page navigation uses browser fragment: `#page={n}` appended by frontend.
+### Health
 
-  ### PDF storage backend details
-  - `relational` (default):
-    - stores bytes in relational table `document_files`
-    - durable and simple for personal/small deployments
-  - `vector`:
-    - stores PDF as chunked base64 payload records
-    - supports both Qdrant and Milvus
-    - useful if you want to avoid additional relational binary growth
+- `GET /health`
 
-  ---
+### Ingestion and documents
 
-  ## 8) Project Structure (Current)
+- `POST /ingest`
+- `GET /documents`
+- `GET /documents/{document_id}/chunks`
+- `DELETE /documents/{document_id}`
+- `GET /pdfs/{pdf_name}`
+- `GET /pdfs/by-id/{document_id}` (primary source link endpoint)
 
-  - `app/main.py`: FastAPI entrypoint.
-  - `app/api/routes.py`: HTTP routes + streaming routes.
-  - `app/config.py`: settings.
-  - `app/llm/client.py`: completion/streaming/embedding + provider failover.
-  - `app/query/`
-    - `router.py`: fast category/intent routing.
-    - `hybrid_search.py`: retrieval.
-    - `reranker.py`: rerank + local fallback.
-    - `rag_generator.py`: prompting, cleaning, confidence, extractive fallback.
-    - `pipeline.py`: query orchestration + query streaming.
-  - `app/chat/`
-    - `session.py`: session/history persistence.
-    - `pipeline.py`: chat orchestration + chat streaming.
-  - `app/ingestion/`: parsing/chunking/ingestion pipeline.
-  - `app/db/`: vector + relational adapters.
-  - `helpdesk-ui/src/`: Next.js UI, including streaming clients.
-  - `tests/`: unit + integration + e2e coverage.
+### Query
 
-  ---
+- `POST /query` — accepts `question`, `service_category?`, `top_k?`, `rerank_top_n?`, `include_citations?`.
+- `POST /query/stream` — same payload, SSE response.
 
-  ## 9) Quick Start
+### Chat
 
-  1. Configure `.env` with valid API keys and DB URLs.
-  2. Start infrastructure (`docker-compose up -d`) if needed.
-  3. Install dependencies:
-    - backend: `pip install -e ".[dev]"`
-    - frontend: `cd helpdesk-ui && npm install`
-  4. Start backend: `python -m uvicorn app.main:app --host 127.0.0.1 --port 8000`
-  5. Start frontend: `cd helpdesk-ui && npm run dev -- -p 3000`
-  6. Open `http://localhost:3000`.
-  7. Upload PDFs in Documents page.
-  8. Test Query and Chat (including streaming behavior).
+- `POST /chat` — accepts `session_id?`, `question`, `service_category?`, `top_k?`, `rerank_top_n?`, `include_citations?`.
+- `POST /chat/stream`
+- `GET /chat/sessions`
+- `GET /chat/{session_id}/history`
+- `DELETE /chat/{session_id}`
 
-  ---
+`QueryResponse` and `ChatResponse` both expose `citations: list[Citation]` when requested. A `Citation` carries `chunk_id`, `document_id`, `pdf_name`, `page_number`, `section_title`, and `score`.
 
-  ## 10) Operational Notes
+---
 
-  - If frontend shows `network error`, verify:
-    - backend health (`GET /health`),
-    - frontend API base URL (`NEXT_PUBLIC_API_URL`),
-    - no stale processes/port conflicts.
-  - Provider 429/rate-limit events are handled with failover/fallback, but best quality still depends on active provider quota.
-  - If **Open PDF** returns 404:
-    - verify the document still exists (`GET /documents`),
-    - verify `PDF_STORAGE_BACKEND` matches how files were ingested,
-    - if you switched backend mode, re-ingest documents so PDF bytes are stored in the selected backend.
-  - For highest quality in production:
-    - use paid provider tiers,
-    - keep reranker quota healthy,
-    - ingest clean PDFs (OCR/noise impacts retrieval quality).
+## 7) Key Configuration (`.env` + `app/config.py`)
 
-  ---
+### LLM and embeddings
 
-  End of manual.
+- `LLM_PROVIDER` ∈ `{groq, openrouter, openai}`; `*_MODEL` per provider.
+- `LLM_REQUEST_TIMEOUT_SEC`, `LLM_RETRY_ATTEMPTS`.
+- `EMBEDDING_PROVIDER` ∈ `{openai, openrouter, cohere}`; `*_EMBEDDING_MODEL`, `EMBEDDING_DIM`.
 
+### Vector / relational DB
 
+- `VECTOR_DB` ∈ `{qdrant, milvus}`.
+- Qdrant: `QDRANT_URL`, `QDRANT_API_KEY`, `QDRANT_COLLECTION`.
+- Milvus: `MILVUS_URI`, `MILVUS_COLLECTION` (dense-only).
+- `RELATIONAL_DB` ∈ `{postgres, mysql}`; `DATABASE_URL`, `DB_SCHEMA`.
+
+### Retrieval and confidence
+
+- `MAX_CHUNKS_RETURN`, `RERANK_TOP_N`, `CONFIDENCE_THRESHOLD`.
+- `RELEVANCE_MIN_TOP_SCORE`, `RELEVANCE_MIN_SECOND_SCORE`, `RELEVANCE_MIN_SCORE_GAP`.
+- Hybrid: `HYBRID_RRF_K`, `HYBRID_DENSE_LIMIT`, `HYBRID_SPARSE_LIMIT`, `SPARSE_INDEX_DIR`.
+- Diversification: `MMR_ENABLED`, `MMR_LAMBDA`, `MAX_PER_DOC`.
+- Citations: `INCLUDE_CITATIONS_DEFAULT`.
+- Fallback: `MIN_FALLBACK_OVERLAP`, `EXTRACTIVE_FALLBACK_CONFIDENCE`.
+- Query rewrite: `QUERY_REWRITE_ENABLED`, `QUERY_REWRITE_TRIGGER_SCORE`.
+- Intent tuning: `INTENT_TROUBLESHOOT_TOP_K_BOOST`, `INTENT_HOWTO_TOP_K_BOOST`.
+
+### Ingestion
+
+- `CHUNK_SIZE`, `CHUNK_OVERLAP`, `EMBED_BATCH_SIZE`.
+- `HEADING_AWARE_CHUNKING`.
+- `PDF_STORAGE_BACKEND` ∈ `{relational, vector}`; `PDF_VECTOR_COLLECTION`, `PDF_VECTOR_CHUNK_BYTES`.
+- `PDF_IMAGE_PAGE_CHAR_THRESHOLD`, `PDF_IMAGE_RATIO_THRESHOLD`.
+
+### OCR
+
+- `OCR_ENABLED`, `OCR_MODE` ∈ `{tesseract, vision, hybrid}`.
+- `OCR_LANGUAGES`, `OCR_RENDER_DPI`, `OCR_TEXT_CONFIDENCE_THRESHOLD`.
+- `OCR_VISION_FALLBACK_ENABLED`, `OCR_VISION_MODEL`, `TESSERACT_CMD`.
+
+### Chat / session
+
+- `CHAT_HISTORY_TURNS`, `MAX_SESSIONS`.
+
+### Open PDF source behaviour
+
+- Source links resolve via `/pdfs/by-id/{document_id}` against the configured PDF storage backend.
+- Page navigation uses the browser fragment (`#page={n}`) appended by the frontend.
+
+---
+
+## 8) Migrations
+
+### Qdrant hybrid migration
+
+Existing dense-only Qdrant collections are not compatible with the new server-side RRF flow. Run the destructive recreation script and re-ingest:
+
+```bash
+python scripts/migrate_qdrant_hybrid.py --confirm
+```
+
+The script recreates the collection with named `dense` and `sparse` vector configs. Without `--confirm` it prints the plan and exits.
+
+### BM25 sparse index
+
+`BM25SparseEncoder.save` writes `bm25.json` under `SPARSE_INDEX_DIR` after each ingest run. Query-time encoding loads the same snapshot via `BM25SparseEncoder.load_or_default`. If the file is missing, the encoder falls back to a deterministic default and the system emits a warning log line.
+
+---
+
+## 9) Project Structure
+
+- `app/main.py` — FastAPI entrypoint.
+- `app/api/routes.py` — HTTP routes + SSE endpoints.
+- `app/config.py` — Pydantic settings (single source of truth).
+- `app/llm/client.py` — completion, streaming, embedding + provider failover.
+- `app/query/`
+  - `router.py` — fast category/intent routing.
+  - `hybrid_search.py` — dense + sparse retrieval + RRF on Qdrant.
+  - `reranker.py` — Cohere rerank with lexical fallback.
+  - `rag_generator.py` — prompts, calibrated confidence, citations, extractive fallback.
+  - `diversify.py` — MMR + per-document cap.
+  - `gates.py` — shared evidence + confidence gate logic.
+  - `rewrite.py` — optional LLM query rewrite.
+  - `pipeline.py` — query orchestration and streaming.
+- `app/chat/`
+  - `session.py` — session/history persistence.
+  - `pipeline.py` — chat orchestration and streaming.
+- `app/ingestion/`
+  - `pdf_parser.py` — text/OCR extraction.
+  - `ocr_parser.py` — Tesseract + optional Vision OCR.
+  - `chunker.py` — heading-aware splitting.
+  - `sparse.py` — BM25 encoder with persistence.
+  - `pipeline.py` — full ingest pipeline.
+- `app/db/`
+  - `vector_store.py` — Qdrant (named hybrid) + Milvus (dense) adapters.
+  - `relational.py` — Postgres / MySQL via SQLAlchemy.
+- `helpdesk-ui/src/` — Next.js UI (streaming clients, query/chat surfaces).
+- `tests/`
+  - `unit/` — isolated unit tests.
+  - `integration/` — API and boundary tests.
+  - `e2e/test_e2e.py` — mocked end-to-end suite (default).
+  - `e2e/test_live_e2e.py` — live providers + Qdrant suite (gated by `RUN_LIVE_E2E=1`).
+
+---
+
+## 10) Quick Start
+
+1. Configure `.env` with valid keys and DB URLs.
+2. `make up` to start Qdrant/Milvus + Postgres/MySQL via docker-compose.
+3. `make install` (Python deps + frontend deps).
+4. `make init` (relational schema + vector collection).
+5. `make dev-backend` and `make dev-frontend`.
+6. Open `http://localhost:3000`, upload documents (any supported format), and exercise both Query and Chat (streaming included).
+
+---
+
+## 11) Operational Notes
+
+- `frontend network error`: verify `GET /health`, `NEXT_PUBLIC_API_URL`, and that no stale processes are blocking ports.
+- Provider 429 / rate-limit events are absorbed by failover + fallback, but answer quality still depends on healthy quotas.
+- `Open PDF` 404s indicate the PDF storage backend was switched between ingest and query — re-ingest to repopulate.
+- Best-quality production setup: paid provider tiers, healthy Cohere rerank quota, clean source documents (OCR noise on scanned PDFs and images hurts retrieval).
+- Re-run `python scripts/migrate_qdrant_hybrid.py --confirm` after collection schema changes; this is destructive and intentionally manual.
+- `ruff check`, `mypy app/`, and `pytest -q` should all exit 0 — CI mirrors this contract.
+
+---
+
+End of manual.

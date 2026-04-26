@@ -34,3 +34,13 @@ helpdesk-ui/.cache/
 coverage/
 .coverage*
 
+# graphify: ignore the entire generated code-graph tree
+graphify-out/
+
+# Runtime artefacts (rebuilt on ingestion / by the user locally)
+data/sparse_index/
+image_pdfs/
+
+# Local-only debug helpers — keep on disk, never commit
+scripts/_*.py
+

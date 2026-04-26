@@ -1,12 +1,19 @@
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import patch, AsyncMock, MagicMock
-from app.query.router import QueryRouter
-from app.query.hybrid_search import HybridSearch
-from app.query.reranker import CohereReranker
-from app.query.rag_generator import RAGGenerator, GenerationResult, build_user_prompt, REFUSAL_PHRASE
-from app.query.pipeline import QueryPipeline
-from app.models.query import SearchResult, QueryRequest
+
 from app.config import get_settings
+from app.models.query import QueryRequest, SearchResult
+from app.query.hybrid_search import HybridSearch
+from app.query.pipeline import QueryPipeline
+from app.query.rag_generator import (
+    REFUSAL_PHRASE,
+    GenerationResult,
+    RAGGenerator,
+    build_user_prompt,
+)
+from app.query.reranker import CohereReranker
+from app.query.router import QueryRouter
 
 settings = get_settings()
 
@@ -46,7 +53,7 @@ async def test_reranker_demo():
 @pytest.mark.asyncio
 @patch("app.query.rag_generator.llm_client.complete", new_callable=AsyncMock)
 async def test_rag_generator_refusal(mock_complete):
-    mock_complete.return_value = "I don't have information on this topic in our documentation."
+    mock_complete.return_value = REFUSAL_PHRASE
     generator = RAGGenerator()
     result = await generator.generate("unknown question", [], "GENERAL")
     assert result.confidence < settings.CONFIDENCE_THRESHOLD
@@ -60,7 +67,7 @@ async def test_pipeline_demo_success(mock_generate):
     request = QueryRequest(question="how do I reset my VPN password?")
     response = await pipeline.run(request)
     
-    assert response.refused == False
+    assert not response.refused
     assert response.confidence >= 0.6
     assert len(response.sources) > 0
     assert response.sources[0].pdf_url.startswith("/pdfs/by-id/")
@@ -74,7 +81,7 @@ async def test_pipeline_confidence_gate(mock_generate):
     request = QueryRequest(question="anything")
     response = await pipeline.run(request)
     
-    assert response.refused == True
+    assert response.refused
     assert response.confidence_label == "refused"
 
 

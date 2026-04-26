@@ -1,12 +1,11 @@
 import base64
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional
 
-from sqlalchemy import select, delete
+from sqlalchemy import delete, select
 
 from app.config import get_settings
-from app.db.relational import get_session_maker, DocumentFileModel
+from app.db.relational import DocumentFileModel, get_session_maker
 from app.db.vector_store import get_vector_store
 
 
@@ -24,7 +23,7 @@ class PdfStorage(ABC):
         pass
 
     @abstractmethod
-    async def get_pdf(self, document_id: str) -> Optional[StoredPdf]:
+    async def get_pdf(self, document_id: str) -> StoredPdf | None:
         pass
 
     @abstractmethod
@@ -46,7 +45,7 @@ class RelationalPdfStorage(PdfStorage):
             )
             await session.commit()
 
-    async def get_pdf(self, document_id: str) -> Optional[StoredPdf]:
+    async def get_pdf(self, document_id: str) -> StoredPdf | None:
         async with get_session_maker()() as session:
             stmt = select(DocumentFileModel).where(DocumentFileModel.document_id == document_id)
             res = await session.execute(stmt)
@@ -103,7 +102,7 @@ class VectorPdfStorage(PdfStorage):
             }
             await store.upsert_payload(collection, f"pdffile:{document_id}:{idx}", payload)
 
-    async def get_pdf(self, document_id: str) -> Optional[StoredPdf]:
+    async def get_pdf(self, document_id: str) -> StoredPdf | None:
         settings = get_settings()
         store = get_vector_store()
         payloads = await store.fetch_payloads(

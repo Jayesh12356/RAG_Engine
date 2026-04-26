@@ -185,36 +185,43 @@ body{
 
       <div class="box">
         <div class="box-ico">🔍</div>
-        <div class="box-name">Parse Text</div>
-        <div class="box-note">Page text + metadata</div>
+        <div class="box-name">Parse + OCR</div>
+        <div class="box-note">Tesseract / Vision</div>
       </div>
       <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
 
       <div class="box">
         <div class="box-ico">✂️</div>
-        <div class="box-name">Chunk Content</div>
-        <div class="box-note">Overlapping splits</div>
+        <div class="box-name">Heading-aware Chunk</div>
+        <div class="box-note">Tables / lists kept</div>
       </div>
       <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
 
       <div class="box">
         <div class="box-ico">🧮</div>
-        <div class="box-name">Dense Embeddings</div>
-        <div class="box-note">Vector generation</div>
+        <div class="box-name">Dense + Sparse</div>
+        <div class="box-note">Embed + BM25</div>
+      </div>
+      <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
+
+      <div class="box">
+        <div class="box-ico">💾</div>
+        <div class="box-name">Persist BM25</div>
+        <div class="box-note">SPARSE_INDEX_DIR</div>
       </div>
       <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
 
       <div class="box">
         <div class="box-ico">🗄️</div>
-        <div class="box-name">Upsert Vector DB</div>
-        <div class="box-note">Chunks + vectors</div>
+        <div class="box-name">Upsert Hybrid</div>
+        <div class="box-note">Named dense + sparse</div>
       </div>
       <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
 
       <div class="box box-end">
         <div class="box-ico">🗃️</div>
-        <div class="box-name">Store Relational DB</div>
-        <div class="box-note">Doc + chunk metadata</div>
+        <div class="box-name">Store Relational</div>
+        <div class="box-note">Docs / chunks / PDF</div>
       </div>
 
     </div>
@@ -233,56 +240,71 @@ body{
 
       <div class="box">
         <div class="box-ico">📥</div>
-        <div class="box-name">Receive Question</div>
+        <div class="box-name">Question</div>
+        <div class="box-note">+ optional category</div>
       </div>
       <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
 
       <div class="box">
         <div class="box-ico">🗺️</div>
-        <div class="box-name">Classify Intent</div>
-        <div class="box-note">Keyword routing</div>
+        <div class="box-name">Router</div>
+        <div class="box-note">Category + intent</div>
+      </div>
+      <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
+
+      <div class="box">
+        <div class="box-ico">✏️</div>
+        <div class="box-name">Optional Rewrite</div>
+        <div class="box-note">Weak top score</div>
       </div>
       <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
 
       <div class="box">
         <div class="box-ico">🔎</div>
-        <div class="box-name">Hybrid Search</div>
-        <div class="box-note">Candidate chunks</div>
+        <div class="box-name">Hybrid + RRF</div>
+        <div class="box-note">Dense + sparse</div>
       </div>
       <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
 
       <div class="box">
         <div class="box-ico">⚖️</div>
-        <div class="box-name">Reranker</div>
-        <div class="box-note">Cohere if available</div>
+        <div class="box-name">Rerank</div>
+        <div class="box-note">Cohere + fallback</div>
+      </div>
+      <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
+
+      <div class="box">
+        <div class="box-ico">🎯</div>
+        <div class="box-name">MMR + Cap</div>
+        <div class="box-note">Diversify chunks</div>
       </div>
       <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
 
       <div class="box">
         <div class="box-ico">🛡️</div>
         <div class="box-name">Evidence Gate</div>
-        <div class="box-note">Signal quality</div>
+        <div class="box-note">top / second / gap</div>
       </div>
       <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
 
       <div class="box">
         <div class="box-ico">⚙️</div>
         <div class="box-name">Generator</div>
-        <div class="box-note">Strict grounding</div>
+        <div class="box-note">Category prompt</div>
       </div>
       <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
 
       <div class="box">
         <div class="box-ico">✅</div>
         <div class="box-name">Confidence Gate</div>
-        <div class="box-note">Answer vs refusal</div>
+        <div class="box-note">Calibrated</div>
       </div>
       <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
 
       <div class="box box-end">
         <div class="box-ico">📤</div>
         <div class="box-name">Response</div>
-        <div class="box-note">Confidence + sources</div>
+        <div class="box-note">+ optional citations</div>
       </div>
 
     </div>
@@ -301,34 +323,48 @@ body{
 
       <div class="box">
         <div class="box-ico">📡</div>
-        <div class="box-name">Open SSE Stream</div>
+        <div class="box-name">Open SSE</div>
       </div>
       <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
 
       <div class="box">
         <div class="box-ico">🔄</div>
-        <div class="box-name">Retrieval + Generation</div>
-        <div class="box-note">Same pipeline</div>
+        <div class="box-name">Same Pipeline</div>
+        <div class="box-note">Rewrite → MMR</div>
+      </div>
+      <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
+
+      <div class="box">
+        <div class="box-ico">⚙️</div>
+        <div class="box-name">Stream LLM</div>
+        <div class="box-note">Bounded retries</div>
       </div>
       <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
 
       <div class="box">
         <div class="box-ico">📨</div>
-        <div class="box-name">Emit delta events</div>
+        <div class="box-name">Emit delta</div>
         <div class="box-note">Incremental text</div>
+      </div>
+      <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
+
+      <div class="box">
+        <div class="box-ico">✅</div>
+        <div class="box-name">Confidence Gate</div>
+        <div class="box-note">Calibrated</div>
       </div>
       <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
 
       <div class="box box-end">
         <div class="box-ico">📦</div>
-        <div class="box-name">Emit final event</div>
-        <div class="box-note">Full QueryResponse</div>
+        <div class="box-name">Emit final</div>
+        <div class="box-note">+ citations</div>
       </div>
 
     </div>
     <div class="fb">
       <div class="fb-dashes"></div>
-      If stream provider fails → server falls back and still emits <strong style="color:#6b7280">final</strong>
+      If LLM stream fails → extractive fallback runs, server still emits <strong style="color:#6b7280">final</strong> (never raw exception)
     </div>
   </div>
 
@@ -345,7 +381,8 @@ body{
 
       <div class="box">
         <div class="box-ico">💬</div>
-        <div class="box-name">Session Create / Resume</div>
+        <div class="box-name">Session</div>
+        <div class="box-note">Create / resume</div>
       </div>
       <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
 
@@ -358,22 +395,36 @@ body{
 
       <div class="box">
         <div class="box-ico">🔎</div>
-        <div class="box-name">Retrieval + Rerank</div>
-        <div class="box-note">Like Query pipeline</div>
+        <div class="box-name">Hybrid + Rerank</div>
+        <div class="box-note">Same as /query</div>
+      </div>
+      <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
+
+      <div class="box">
+        <div class="box-ico">🎯</div>
+        <div class="box-name">MMR + Cap</div>
+        <div class="box-note">Diversify</div>
+      </div>
+      <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
+
+      <div class="box">
+        <div class="box-ico">🛡️</div>
+        <div class="box-name">Evidence Gate</div>
+        <div class="box-note">Shared helper</div>
       </div>
       <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
 
       <div class="box">
         <div class="box-ico">🧠</div>
-        <div class="box-name">Build Prompt</div>
-        <div class="box-note">+ conv. history</div>
+        <div class="box-name">Prompt + History</div>
+        <div class="box-note">Category aware</div>
       </div>
       <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
 
       <div class="box">
         <div class="box-ico">⚙️</div>
-        <div class="box-name">Generate Answer</div>
-        <div class="box-note">Or use fallback</div>
+        <div class="box-name">Generate</div>
+        <div class="box-note">+ confidence gate</div>
       </div>
       <div class="arrow"><div class="arrow-body"></div><div class="arrow-head"></div><div class="dot"></div></div>
 
@@ -386,14 +437,14 @@ body{
 
       <div class="box box-end">
         <div class="box-ico">📤</div>
-        <div class="box-name">Chat Response</div>
-        <div class="box-note">Updated history</div>
+        <div class="box-name">Response</div>
+        <div class="box-note">+ optional citations</div>
       </div>
 
     </div>
     <div class="fb">
       <div class="fb-dashes"></div>
-      /chat/stream → SSE mode emits <strong style="color:#6b7280">delta</strong> then <strong style="color:#6b7280">final</strong> (same fallback behavior)
+      /chat/stream → SSE mode emits <strong style="color:#6b7280">delta</strong> then <strong style="color:#6b7280">final</strong>; on failure, generic refusal (no raw exceptions)
     </div>
   </div>
 

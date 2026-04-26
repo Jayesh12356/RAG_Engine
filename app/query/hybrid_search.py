@@ -1,10 +1,11 @@
+
 import structlog
-from typing import List, Optional
-from app.models.query import SearchResult
-from app.db.vector_store import get_vector_store
-from app.llm import client as llm_client
+
 from app.config import get_settings
+from app.db.vector_store import get_vector_store
 from app.ingestion.sparse import BM25SparseEncoder
+from app.llm import client as llm_client
+from app.models.query import SearchResult
 
 logger = structlog.get_logger(__name__)
 settings = get_settings()
@@ -15,7 +16,7 @@ class HybridSearch:
         if not demo_mode:
             self.vector_store = get_vector_store()
 
-    async def search(self, question: str, service_category: Optional[str], top_k: int) -> List[SearchResult]:
+    async def search(self, question: str, service_category: str | None, top_k: int) -> list[SearchResult]:
         if self.demo_mode:
             logger.info("hybrid_search_demo", question=question, category=service_category)
             return [
@@ -44,14 +45,12 @@ class HybridSearch:
 
         try:
             logger.info("hybrid_search_embed_start", question=question)
-            dense_vectors = await llm_client.embed([question])
-            dense_vector = dense_vectors[0]
+            dense_vector = await llm_client.embed_query(question)
 
             sparse_vector = None
             if getattr(self.vector_store, "supports_sparse", False):
                 logger.info("hybrid_search_sparse_start")
-                sparse_encoder = BM25SparseEncoder()
-                sparse_encoder.fit([question])
+                sparse_encoder = BM25SparseEncoder.load_or_default(settings.SPARSE_INDEX_DIR)
                 sparse_vector_raw = sparse_encoder.encode(question)
                 sparse_vector = {str(k): v for k, v in sparse_vector_raw.items()}
 

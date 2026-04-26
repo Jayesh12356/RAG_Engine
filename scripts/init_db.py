@@ -1,5 +1,7 @@
 import asyncio
+
 import structlog
+
 from app.config import get_settings
 from app.db.relational import init_db as relational_init_db
 

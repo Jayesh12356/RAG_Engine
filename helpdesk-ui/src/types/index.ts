@@ -16,6 +16,7 @@ export interface QueryResponse {
   sources:          SourceChunk[]
   service_category: string
   refused:          boolean
+  visual_capable?:  boolean
 }
 
 export interface DocumentListItem {
@@ -34,6 +35,8 @@ export interface HealthResponse {
   vector_db:          string
   relational_db:      string
   demo_mode:          boolean
+  visual_capable?:    boolean
+  image_gen_active?:  boolean
 }
 
 export interface IngestResponse {
@@ -77,6 +80,7 @@ export interface ChatResponse {
   service_category:  string
   refused:           boolean
   history:           HistoryTurn[]
+  visual_capable?:   boolean
 }
 
 export interface SessionSummary {

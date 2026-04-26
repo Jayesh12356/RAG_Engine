@@ -1,4 +1,5 @@
 import asyncio
+
 import httpx
 
 QUESTIONS = [
@@ -36,8 +37,7 @@ async def test_all():
             score = 0.0
             if data.get("sources"):
                 score = data["sources"][0]["score"]
-                if score < min_score:
-                    min_score = score
+                min_score = min(min_score, score)
             print(f"Q{i} Top Score: {score}")
         print(f"ABSOLUTE MINIMUM SCORE ACROSS 20 QUESTIONS: {min_score}")
 

@@ -1,9 +1,10 @@
-import structlog
-import cohere
-from typing import List
 import re
-from app.models.query import SearchResult
+
+import cohere
+import structlog
+
 from app.config import get_settings
+from app.models.query import SearchResult
 
 logger = structlog.get_logger(__name__)
 settings = get_settings()
@@ -18,7 +19,7 @@ class CohereReranker:
         if not demo_mode:
             self.client = cohere.AsyncClient(api_key=settings.COHERE_API_KEY)
 
-    async def rerank(self, question: str, results: List[SearchResult], top_n: int) -> List[SearchResult]:
+    async def rerank(self, question: str, results: list[SearchResult], top_n: int) -> list[SearchResult]:
         if not results:
             return []
 

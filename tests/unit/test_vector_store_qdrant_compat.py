@@ -1,7 +1,7 @@
 import pytest
 
-from app.db.vector_store import QdrantVectorStore
 from app.config import Settings
+from app.db.vector_store import QdrantVectorStore
 
 
 class _Point:

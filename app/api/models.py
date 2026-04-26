@@ -1,5 +1,7 @@
+from typing import Any
+
 from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
+
 
 class IngestResponse(BaseModel):
     document_id: str = ""
@@ -8,14 +10,15 @@ class IngestResponse(BaseModel):
     total_chunks: int = 0
     service_name: str = ""
     status: str
-    error: Optional[str] = None
-    task_id: Optional[str] = None
+    error: str | None = None
+    task_id: str | None = None
 
 class QueryAPIRequest(BaseModel):
     question: str
-    service_category: Optional[str] = None
+    service_category: str | None = None
     top_k: int = 20
-    rerank_top_n: Optional[int] = None
+    rerank_top_n: int | None = None
+    include_citations: bool | None = None
 
 class DocumentListItem(BaseModel):
     document_id: str
@@ -26,12 +29,12 @@ class DocumentListItem(BaseModel):
     created_at: str
 
 class DocumentListResponse(BaseModel):
-    documents: List[DocumentListItem]
+    documents: list[DocumentListItem]
     total: int
 
 class ChunkListResponse(BaseModel):
     document_id: str
-    chunks: List[Dict[str, Any]]
+    chunks: list[dict[str, Any]]
     total: int
 
 class DeleteResponse(BaseModel):
@@ -46,6 +49,8 @@ class HealthResponse(BaseModel):
     vector_db: str
     relational_db: str
     demo_mode: bool
+    visual_capable: bool = False
+    image_gen_active: bool = False
 
 class SessionSummary(BaseModel):
     session_id: str
@@ -54,12 +59,12 @@ class SessionSummary(BaseModel):
     first_question: str
 
 class SessionListResponse(BaseModel):
-    sessions: List[SessionSummary]
+    sessions: list[SessionSummary]
     total: int
 
 class HistoryResponse(BaseModel):
     session_id: str
-    turns: List[Any]
+    turns: list[Any]
     total: int
 
 class DeleteSessionResponse(BaseModel):

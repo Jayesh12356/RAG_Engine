@@ -1,13 +1,14 @@
-import pytest
-from httpx import AsyncClient, ASGITransport
-from unittest.mock import patch, AsyncMock, MagicMock
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.main import app
+import pytest
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
+
 from app.ingestion.pipeline import IngestionResult
+from app.main import app
 from app.models.query import QueryResponse
 
-import pytest_asyncio
 
 @pytest_asyncio.fixture
 async def client():
@@ -24,9 +25,12 @@ async def test_health_returns_ok(client):
     assert "llm_provider" in data
 
 @pytest.mark.asyncio
-async def test_ingest_rejects_non_pdf(client):
-    file_content = b"Not a PDF"
-    files = {"file": ("test.txt", file_content, "text/plain")}
+async def test_ingest_rejects_unsupported_extension(client):
+    """An obviously unsupported extension (.exe) is rejected; ``.txt`` and
+    other office/data formats are now first-class so we no longer reject
+    them at the API boundary."""
+    file_content = b"MZ\x90\x00fake binary"
+    files = {"file": ("test.exe", file_content, "application/octet-stream")}
     response = await client.post("/ingest", files=files)
     assert response.status_code == 400
 

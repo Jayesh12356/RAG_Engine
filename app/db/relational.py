@@ -1,8 +1,23 @@
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy.orm import declarative_base
-from sqlalchemy import Column, String, Text, DateTime, JSON, Float, LargeBinary, ForeignKey, func, select, delete, text
-from app.config import get_settings
 import uuid
+
+from sqlalchemy import (
+    JSON,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    LargeBinary,
+    String,
+    Text,
+    delete,
+    func,
+    select,
+    text,
+)
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import declarative_base
+
+from app.config import get_settings
 
 Base = declarative_base()
 

@@ -1,6 +1,8 @@
 import asyncio
-import structlog
 from pathlib import Path
+
+import structlog
+
 from app.ingestion.pipeline import IngestPipeline
 
 logger = structlog.get_logger(__name__)
